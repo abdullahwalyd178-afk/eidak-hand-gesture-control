@@ -198,15 +198,19 @@ def test_dispatcher_media_and_pause():
         disp.handle(ev_frame, classify_hand(palm))
     got = [c[0] for c in sink.calls]
     assert ("press", ("space",)) in sink.calls, got
-    # fist is destructive: one fist only arms, the second fist confirms
+    # fist is destructive: one fist only arms, the second fist confirms.
+    # Both fists go through ONE engine with a real release between them:
+    # a confirming fist must be a NEW fist, not the same one still held.
     eng = GestureEngine(cfg())
     sink.calls.clear()
     disp.handle(feed(eng, make_landmarks(), 100.0, frames=25, dt=0.05),  # fist 1.25s
                 classify_hand(make_landmarks()))
     assert ("hotkey", ("ctrl", "w")) not in sink.calls, sink.calls
     assert disp.notice, "arming must surface a HUD notice"
-    eng = GestureEngine(cfg())
-    disp.handle(feed(eng, make_landmarks(), 102.0, frames=25, dt=0.05),  # confirm fist
+    relaxed = make_landmarks(up=("index",))
+    disp.handle(feed(eng, relaxed, 102.0, frames=10, dt=0.05),  # hand opens: release
+                classify_hand(relaxed))
+    disp.handle(feed(eng, make_landmarks(), 103.0, frames=25, dt=0.05),  # confirm fist
                 classify_hand(make_landmarks()))
     assert ("hotkey", ("ctrl", "w")) in sink.calls, sink.calls
     # three fingers -> speed up (shift+.)
@@ -263,6 +267,19 @@ def test_single_fist_never_closes():
     print("ok single fist does not close anything")
 
 
+def test_continuous_fist_never_confirms():
+    # One long uninterrupted fist can never close: the engine edge-triggers
+    # holds, so without a release there is no second FIST event to confirm,
+    # no matter how long the hand stays closed (here 8s > hold + window).
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg(start_mode="media"))
+    eng = GestureEngine(cfg())
+    disp.handle(feed(eng, make_landmarks(), 300.0, frames=160, dt=0.05),
+                classify_hand(make_landmarks()))
+    assert not [c for c in sink.calls if c[0] == "hotkey"], sink.calls
+    print("ok one long fist never closes (release required)")
+
+
 def test_no_scroll_during_right_click_pose():
     eng = GestureEngine(cfg())
     for i in range(8):
@@ -286,5 +303,6 @@ if __name__ == "__main__":
     test_mapping_bounds()
     test_never_hits_failsafe_corners()
     test_single_fist_never_closes()
+    test_continuous_fist_never_confirms()
     test_no_scroll_during_right_click_pose()
     print("ALL TESTS PASSED")
