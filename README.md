@@ -44,11 +44,11 @@ Press **M** to switch. | اضغط حرف **M** للتبديل.
 | Gesture | الإشارة | Action |
 |---|---|---|
 | ✋ Open palm (hold) | كف مفتوح | Play / pause / تشغيل وإيقاف |
-| 👉 Swipe right | مسح يمين | Forward 10s / تقديم |
-| 👈 Swipe left | مسح شمال | Back 10s / ترجيع |
+| 👉 Swipe right | مسح يمين | Seek forward / تقديم (الخطوة حسب المشغّل) |
+| 👈 Swipe left | مسح شمال | Seek back / ترجيع (الخطوة حسب المشغّل) |
 | ⬆️ Swipe up | مسح فوق | Volume up / تعلية الصوت |
 | ⬇️ Swipe down | مسح تحت | Volume down / وطية الصوت |
-| ✊ Fist (hold 1s) | قبضة (ثبّتها) | Close video/tab / قفل الفيديو |
+| ✊ Fist (hold 1.5s) | قبضة (ثبّتها ثانية ونص) | Close video/tab / قفل الفيديو |
 | 🤟 3 fingers (hold) | 3 صوابع | Speed up / تسريع |
 | 🖖 4 fingers no thumb (hold) | 4 صوابع من غير الإبهام | Speed down / تبطئة |
 | 👍 Thumb up (hold) | إبهام لفوق | Fullscreen / ملء الشاشة |
@@ -68,11 +68,11 @@ Built specifically to survive flaky cameras:
 - **`Diagnose-Camera.bat`** — standalone report of every camera and driver, for troubleshooting.
 - Settings (camera index, sensitivity, speeds…) live in `config.json` after the first run.
 
-Emergency stop: slam the real mouse into any screen corner (PyAutoGUI fail-safe).
+Emergency stop: slam the **real** mouse into any screen corner (PyAutoGUI fail-safe). The hand-driven cursor stays a few pixels away from the corners, so it never triggers this by itself.
 
 ## Requirements | المتطلبات
 
-- Windows 10/11 (works on Linux/macOS too) · Python 3.9–3.12 · any webcam
+- Windows 10/11 (the code also runs on Linux/macOS, but `Install-And-Run.bat` is Windows-only and macOS needs Accessibility permission for PyAutoGUI) · Python 3.9–3.12 · any webcam
 - `pip install -r requirements.txt` (done automatically by the .bat)
 - Note: MediaPipe is pinned to `0.10.14` — newer versions removed the hand API this app uses.
 
