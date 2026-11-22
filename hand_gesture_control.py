@@ -89,7 +89,8 @@ DEFAULT_CONFIG = {
     "swipe_window_sec": 0.30,
     "swipe_min_travel": 0.22,      # normalized frame units
     "hold_trigger_sec": 0.50,      # palm / fingers holds
-    "fist_hold_sec": 1.50,           # longer hold: a passing fist must not close the focused window
+    "fist_hold_sec": 1.00,            # hold time for ONE fist
+    "fist_confirm_window_sec": 3.0,  # close needs a SECOND fist within this window
     "gesture_cooldown_sec": 0.80,
     "pinch_ratio": 0.35,           # pinch distance / hand size
     "camera_reconnect_max_sec": 20,
@@ -550,6 +551,8 @@ class Dispatcher:
         self.mode = cfg.get("start_mode", "mouse")
         self.paused = False
         self._smooth: Optional[Tuple[float, float]] = None
+        self._fist_armed_until = 0.0   # destructive close needs a double-fist
+        self.notice = ""               # transient HUD message
 
     def toggle_mode(self) -> str:
         self.mode = "media" if self.mode == "mouse" else "mouse"
@@ -581,6 +584,9 @@ class Dispatcher:
         return self._smooth
 
     def handle(self, events: List[GestureEvent], state: HandState) -> None:
+        if self._fist_armed_until and time.monotonic() > self._fist_armed_until:
+            self._fist_armed_until = 0.0
+            self.notice = ""
         for ev in events:
             if self.mode == "mouse":
                 self._handle_mouse(ev, state)
@@ -610,13 +616,25 @@ class Dispatcher:
             self.sink.scroll(-ev.value * float(self.cfg["scroll_gain"]))
 
     def _handle_media(self, ev: GestureEvent, state: HandState) -> None:
+        # Closing is destructive (Ctrl+W hits whatever window has focus), so a
+        # single fist only ARMS it; a second fist inside the confirm window
+        # actually closes. One stray fist can no longer close anything.
+        if ev.name == "FIST":
+            now = time.monotonic()
+            if self._fist_armed_until and now <= self._fist_armed_until:
+                self._fist_armed_until = 0.0
+                self.notice = ""
+                self.sink.hotkey("ctrl", "w")                    # confirmed close
+            else:
+                self._fist_armed_until = now + float(self.cfg["fist_confirm_window_sec"])
+                self.notice = "FIST AGAIN TO CONFIRM CLOSE"
+            return
         mapping = {
             "PALM": lambda: self.sink.press("space"),            # play / pause
-            "SWIPE_RIGHT": lambda: self.sink.press("right"),     # +10s (YouTube/players)
-            "SWIPE_LEFT": lambda: self.sink.press("left"),       # -10s
+            "SWIPE_RIGHT": lambda: self.sink.press("right"),     # seek forward (player step)
+            "SWIPE_LEFT": lambda: self.sink.press("left"),       # seek back
             "SWIPE_UP": lambda: self.sink.press("volumeup"),
             "SWIPE_DOWN": lambda: self.sink.press("volumedown"),
-            "FIST": lambda: self.sink.hotkey("ctrl", "w"),       # close video/tab
             "THREE_FINGERS": lambda: self.sink.hotkey("shift", "."),  # speed up
             "FOUR_FINGERS": lambda: self.sink.hotkey("shift", ","),   # speed down
             "THUMBS_UP": lambda: self.sink.press("f"),           # fullscreen
@@ -797,7 +815,7 @@ def run(cfg: dict) -> int:
                 fps = 0.9 * fps + 0.1 * (1.0 / dt)
 
             draw_hud(frame, dispatcher.mode, dispatcher.paused, engine.last_gesture,
-                     fps, status, camera.low_light, state.found)
+                     fps, dispatcher.notice or status, camera.low_light, state.found)
             cv2.imshow(window, frame)
 
             key = cv2.waitKey(1) & 0xFF
