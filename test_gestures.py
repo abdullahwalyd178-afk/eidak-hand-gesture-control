@@ -159,7 +159,7 @@ def test_holds():
     assert "PALM" in names(ev), names(ev)
 
     eng = GestureEngine(cfg())
-    ev = feed(eng, make_landmarks(), 100.0, frames=35, dt=0.05)  # fist 1.75s (default hold is 1.5s)
+    ev = feed(eng, make_landmarks(), 100.0, frames=25, dt=0.05)  # fist 1.25s
     assert "FIST" in names(ev), names(ev)
 
     eng = GestureEngine(cfg())
@@ -198,10 +198,15 @@ def test_dispatcher_media_and_pause():
         disp.handle(ev_frame, classify_hand(palm))
     got = [c[0] for c in sink.calls]
     assert ("press", ("space",)) in sink.calls, got
-    # fist -> close (ctrl+w)
+    # fist is destructive: one fist only arms, the second fist confirms
     eng = GestureEngine(cfg())
     sink.calls.clear()
-    disp.handle(feed(eng, make_landmarks(), 100.0, frames=35, dt=0.05),  # fist 1.75s
+    disp.handle(feed(eng, make_landmarks(), 100.0, frames=25, dt=0.05),  # fist 1.25s
+                classify_hand(make_landmarks()))
+    assert ("hotkey", ("ctrl", "w")) not in sink.calls, sink.calls
+    assert disp.notice, "arming must surface a HUD notice"
+    eng = GestureEngine(cfg())
+    disp.handle(feed(eng, make_landmarks(), 102.0, frames=25, dt=0.05),  # confirm fist
                 classify_hand(make_landmarks()))
     assert ("hotkey", ("ctrl", "w")) in sink.calls, sink.calls
     # three fingers -> speed up (shift+.)
@@ -248,6 +253,16 @@ def test_never_hits_failsafe_corners():
     print("ok cursor never lands on fail-safe corners")
 
 
+def test_single_fist_never_closes():
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg(start_mode="media"))
+    eng = GestureEngine(cfg())
+    disp.handle(feed(eng, make_landmarks(), 200.0, frames=25, dt=0.05),
+                classify_hand(make_landmarks()))
+    assert not [c for c in sink.calls if c[0] == "hotkey"], sink.calls
+    print("ok single fist does not close anything")
+
+
 def test_no_scroll_during_right_click_pose():
     eng = GestureEngine(cfg())
     for i in range(8):
@@ -270,5 +285,6 @@ if __name__ == "__main__":
     test_dispatcher_media_and_pause()
     test_mapping_bounds()
     test_never_hits_failsafe_corners()
+    test_single_fist_never_closes()
     test_no_scroll_during_right_click_pose()
     print("ALL TESTS PASSED")
