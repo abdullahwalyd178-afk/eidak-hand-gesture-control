@@ -5,7 +5,7 @@
 Builds synthetic MediaPipe-style landmark lists, so no camera,
 no display and no real pyautogui are needed.
 
-Run:  python tests/test_gestures.py
+Run:  python test_gestures.py
 """
 import os
 import sys
@@ -159,7 +159,7 @@ def test_holds():
     assert "PALM" in names(ev), names(ev)
 
     eng = GestureEngine(cfg())
-    ev = feed(eng, make_landmarks(), 100.0, frames=25, dt=0.05)  # fist 1.25s
+    ev = feed(eng, make_landmarks(), 100.0, frames=35, dt=0.05)  # fist 1.75s (default hold is 1.5s)
     assert "FIST" in names(ev), names(ev)
 
     eng = GestureEngine(cfg())
@@ -201,7 +201,7 @@ def test_dispatcher_media_and_pause():
     # fist -> close (ctrl+w)
     eng = GestureEngine(cfg())
     sink.calls.clear()
-    disp.handle(feed(eng, make_landmarks(), 100.0, frames=25, dt=0.05),
+    disp.handle(feed(eng, make_landmarks(), 100.0, frames=35, dt=0.05),  # fist 1.75s
                 classify_hand(make_landmarks()))
     assert ("hotkey", ("ctrl", "w")) in sink.calls, sink.calls
     # three fingers -> speed up (shift+.)
@@ -235,6 +235,28 @@ def test_mapping_bounds():
     print("ok screen mapping bounds")
 
 
+def test_never_hits_failsafe_corners():
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg())
+    corners = {(0, 0), (sink.screen_w - 1, 0), (0, sink.screen_h - 1),
+               (sink.screen_w - 1, sink.screen_h - 1)}
+    for tip in [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (0.2, 0.2, 0), (0.8, 0.2, 0)]:
+        disp._smooth = None
+        x, y = disp._map_to_screen(tip)
+        assert (int(x), int(y)) not in corners, (tip, x, y)
+        assert x >= 1 and y >= 1 and x <= sink.screen_w - 2 and y <= sink.screen_h - 2
+    print("ok cursor never lands on fail-safe corners")
+
+
+def test_no_scroll_during_right_click_pose():
+    eng = GestureEngine(cfg())
+    for i in range(8):
+        lm = make_landmarks(up=("index", "middle"), pinch_middle=True, shift=(0.0, 0.004 * i))
+        names = [e.name for e in eng.update(classify_hand(lm), 100.0 + i * 0.03)]
+        assert "SCROLL" not in names, names
+    print("ok no scroll while pinching middle finger")
+
+
 if __name__ == "__main__":
     test_classify()
     test_move()
@@ -247,4 +269,6 @@ if __name__ == "__main__":
     test_dispatcher_mouse()
     test_dispatcher_media_and_pause()
     test_mapping_bounds()
+    test_never_hits_failsafe_corners()
+    test_no_scroll_during_right_click_pose()
     print("ALL TESTS PASSED")
