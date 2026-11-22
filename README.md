@@ -48,7 +48,7 @@ Press **M** to switch. | اضغط حرف **M** للتبديل.
 | 👈 Swipe left | مسح شمال | Seek back / ترجيع (الخطوة حسب المشغّل) |
 | ⬆️ Swipe up | مسح فوق | Volume up / تعلية الصوت |
 | ⬇️ Swipe down | مسح تحت | Volume down / وطية الصوت |
-| ✊ Fist (hold 1.5s) | قبضة (ثبّتها ثانية ونص) | Close video/tab / قفل الفيديو |
+| ✊✊ Fist twice (1s each) | قبضة مرتين ورا بعض (كل مرة ثانية) | Close video/tab / قفل الفيديو (الأولى تجهّز والتانية تؤكد) |
 | 🤟 3 fingers (hold) | 3 صوابع | Speed up / تسريع |
 | 🖖 4 fingers no thumb (hold) | 4 صوابع من غير الإبهام | Speed down / تبطئة |
 | 👍 Thumb up (hold) | إبهام لفوق | Fullscreen / ملء الشاشة |
