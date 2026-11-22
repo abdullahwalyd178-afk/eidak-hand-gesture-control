@@ -89,13 +89,14 @@ DEFAULT_CONFIG = {
     "swipe_window_sec": 0.30,
     "swipe_min_travel": 0.22,      # normalized frame units
     "hold_trigger_sec": 0.50,      # palm / fingers holds
-    "fist_hold_sec": 1.00,
+    "fist_hold_sec": 1.50,           # longer hold: a passing fist must not close the focused window
     "gesture_cooldown_sec": 0.80,
     "pinch_ratio": 0.35,           # pinch distance / hand size
     "camera_reconnect_max_sec": 20,
     "start_mode": "mouse",         # mouse | media
     "show_landmarks": True,
     "low_light_threshold": 35,
+    "edge_margin_px": 4,           # keep cursor off exact corners (fail-safe)
 }
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -405,7 +406,11 @@ class GestureEngine:
         # --- continuous states --------------------------------------------
         only_index = up == 1 and state.fingers_up.get("index") and not pinch_now
         index_middle = (
-            up == 2 and state.fingers_up.get("index") and state.fingers_up.get("middle") and not pinch_now
+            up == 2
+            and state.fingers_up.get("index")
+            and state.fingers_up.get("middle")
+            and not pinch_now
+            and not state.pinch_middle  # right-click pose must not scroll
         )
         if only_index or self._dragging:
             events.append(GestureEvent("MOVE", 0.0))
@@ -560,8 +565,12 @@ class Dispatcher:
         # Sensitivity expands movement around the screen center.
         sx = 0.5 + (nx - 0.5) * sens
         sy = 0.5 + (ny - 0.5) * sens
-        x = min(max(sx, 0.0), 1.0) * (self.sink.screen_w - 1)
-        y = min(max(sy, 0.0), 1.0) * (self.sink.screen_h - 1)
+        # Stay a few pixels inside the screen: PyAutoGUI's fail-safe fires on the
+        # exact corner pixels, which would otherwise quit the app whenever the
+        # hand reaches a corner (e.g. a window's close button).
+        edge = int(self.cfg.get("edge_margin_px", 4))
+        x = edge + min(max(sx, 0.0), 1.0) * (self.sink.screen_w - 1 - 2 * edge)
+        y = edge + min(max(sy, 0.0), 1.0) * (self.sink.screen_h - 1 - 2 * edge)
         if self._smooth is None:
             self._smooth = (x, y)
         alpha = 1.0 - float(self.cfg["smoothing"])
