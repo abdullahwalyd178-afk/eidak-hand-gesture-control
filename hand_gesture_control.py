@@ -104,6 +104,11 @@ DEFAULT_CONFIG = {
     "detection_confidence": 0.65,
     "tracking_confidence": 0.55,
     "smoothing": 0.35,             # 0..1, higher = steadier cursor
+    # Media keys only fire when a window whose title contains one of these
+    # tokens is focused (Windows). Empty list = send to any window.
+    "media_window_allowlist": ["youtube", "netflix", "vlc", "mpv", "media player",
+                               "kodi", "plex", "spotify", "disney", "prime video",
+                               "twitch", "dailymotion", "mpc-hc", "kmplayer", "potplayer"],
     "sensitivity": 1.4,            # cursor speed multiplier
     "control_margin": 0.18,        # camera-area margin mapped to full screen
     "click_debounce_sec": 0.12,    # must stay well below double_click_window_sec
@@ -163,13 +168,15 @@ def save_config(cfg: dict) -> None:
 # HUD drawing
 # --------------------------------------------------------------------------
 def draw_hud(frame, mode: str, paused: bool, gesture: str, fps: float, status: str,
-             low_light: bool, hand_found: bool) -> None:
+             low_light: bool, hand_found: bool, active_window: str = "") -> None:
     h, w = frame.shape[:2]
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 92), (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
 
     mode_txt = "MOUSE MODE" if mode == "mouse" else "VIDEO MODE"
+    if mode != "mouse" and active_window:
+        mode_txt += f"  |  {active_window[:38]}"
     color = (0, 220, 120) if mode == "mouse" else (255, 170, 40)
     cv2.putText(frame, mode_txt, (14, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
@@ -403,7 +410,8 @@ def run(cfg: dict) -> int:
                 fps = 0.9 * fps + 0.1 * (1.0 / dt)
 
             draw_hud(frame, dispatcher.mode, dispatcher.paused, pipeline.last_gesture,
-                     fps, dispatcher.notice or status, camera.low_light, state.found)
+                     fps, dispatcher.notice or status, camera.low_light, state.found,
+                     active_window=dispatcher.active_window)
             cv2.imshow(window, frame)
 
             key = cv2.waitKey(1 if not idle else 10) & 0xFF

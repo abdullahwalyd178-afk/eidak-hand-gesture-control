@@ -83,7 +83,8 @@ def test_probe_plan_strict():
 def test_save_config_diff_only(tmp_path=None):
     path = hgc.CONFIG_PATH
     try:
-        hgc.CONFIG_PATH = "/tmp/eidak-test-config.json"
+        import tempfile
+        hgc.CONFIG_PATH = os.path.join(tempfile.gettempdir(), "eidak-test-config.json")
         cfg = dict(hgc.DEFAULT_CONFIG)
         cfg["sensitivity"] = 2.0
         cfg["last_camera"] = {"index": 1, "backend": 700}
@@ -103,8 +104,8 @@ def test_save_config_diff_only(tmp_path=None):
             check("all-default saves empty diff", json.load(fh) == {})
     finally:
         hgc.CONFIG_PATH = path
-        if os.path.exists("/tmp/eidak-test-config.json"):
-            os.remove("/tmp/eidak-test-config.json")
+        if os.path.exists(hgc.CONFIG_PATH):
+            os.remove(hgc.CONFIG_PATH)
 
 
 def test_freeze_detection():
@@ -160,3 +161,90 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test_failed_reopen_releases_old_handle():
+    """When the quick reopen fails, the OLD camera handle must be released
+    first: single-connection Windows cameras block every retry otherwise."""
+    if cam.cv2 is None:
+        print("  skip failed-reopen test (no cv2)")
+        return
+    cfg = dict(hgc.DEFAULT_CONFIG)
+    m = cam.CameraManager(cfg)
+    released = {"old": False}
+
+    class OldCap:
+        def read(self):
+            return False, None
+        def release(self):
+            released["old"] = True
+
+    class FailCap:
+        def __init__(self, *a, **k):
+            pass
+        def isOpened(self):
+            return False
+        def release(self):
+            pass
+
+    m.cap = OldCap()
+    m.active_index, m.active_backend = 0, 0
+    m._last_reconnect_attempt = -100.0  # force an immediate reconnect attempt
+    orig = cam.cv2.VideoCapture
+    cam.cv2.VideoCapture = lambda *a, **k: FailCap()
+    try:
+        for _ in range(15):
+            m.read()
+        check("old handle released after failed reopen", released["old"] is True)
+        check("cap cleared after failed reopen", m.cap is None)
+        # a cap-less read must RETRY the reopen on backoff, not give up
+        m._last_reconnect_attempt = -100.0
+        ok2, _, status2 = m.read()
+        check("cap-less read keeps reconnecting", ok2 is False and "Reconnecting" in status2)
+    finally:
+        cam.cv2.VideoCapture = orig
+
+
+def test_successful_reopen_swaps_handle():
+    """A successful quick reopen replaces the handle and resets the backoff."""
+    if cam.cv2 is None:
+        print("  skip successful-reopen test (no cv2)")
+        return
+    cfg = dict(hgc.DEFAULT_CONFIG)
+    m = cam.CameraManager(cfg)
+    released = {"old": False}
+    bright = np.full((480, 640, 3), 100, np.uint8)
+
+    class OldCap:
+        def read(self):
+            return False, None
+        def release(self):
+            released["old"] = True
+
+    class GoodCap:
+        def isOpened(self):
+            return True
+        def set(self, *a):
+            return True
+        def read(self):
+            return True, bright.copy()
+        def release(self):
+            pass
+
+    m.cap = OldCap()
+    m.active_index, m.active_backend = 0, 0
+    m._reconnect_delay = 8.0
+    orig = cam.cv2.VideoCapture
+    cam.cv2.VideoCapture = lambda *a, **k: GoodCap()
+    try:
+        for _ in range(15):
+            m.read()
+        ok, frame, status = m.read()
+        check("old handle released on failure path", released["old"] is True)
+        check("new handle installed", isinstance(m.cap, GoodCap))
+        check("backoff reset after success", m._reconnect_delay == 1.0)
+        # stream reads again from the new handle
+        ok2, frame2, _ = m.read()
+        check("reads resume after reconnect", ok2 is True and frame2 is not None)
+    finally:
+        cam.cv2.VideoCapture = orig
