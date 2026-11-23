@@ -860,3 +860,31 @@ def test_media_keys_blocked_without_player_window():
     finally:
         g.active_window_title = orig
     print("ok media keys gated on focused player window")
+
+
+def test_curl_and_separation_cancel_without_rearming():
+    from gestures import HandStabilizer
+    for key in ("index", "middle"):
+        stab = HandStabilizer(cfg(pinch_confirm_frames=1))
+        assert stab._update_pinch(key, 0.8, 1.8, True) == (False, False)
+        assert stab._update_pinch(key, 0.2, 1.8, True) == (True, False)
+        assert stab._update_pinch(key, 0.8, 0.7, True) == (False, True)
+        for _ in range(4):
+            assert stab._update_pinch(key, 0.8, 0.7, True) == (False, False)
+        assert stab._update_pinch(key, 0.2, 1.8, True) == (False, False)
+        assert stab._update_pinch(key, 0.8, 1.8, True) == (False, False)
+        assert stab._update_pinch(key, 0.2, 1.8, True) == (True, False)
+
+
+def test_simultaneous_curl_and_separation_emits_no_click():
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    idle = make_landmarks(up=("index",))
+    curl = make_landmarks()
+    curl[THUMB_TIP] = (0.15, 0.55, 0.0)
+    pinch = pinch_at(0.2)
+    run_pipe(pipe, disp, settle(idle, 100.0, n=14))
+    run_pipe(pipe, disp, [(100.5 + i * 0.033, pinch) for i in range(5)])
+    run_pipe(pipe, disp, [(100.8 + i * 0.033, curl) for i in range(5)])
+    run_pipe(pipe, disp, [(101.1 + i * 0.033, pinch) for i in range(5)])
+    assert not real_calls(sink), real_calls(sink)
