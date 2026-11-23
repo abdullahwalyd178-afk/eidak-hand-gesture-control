@@ -409,7 +409,7 @@ def _write_report(lines: List[str]) -> None:
         import os
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "camera-report.txt")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write("\\n".join(lines) + "\\n")
+            fh.write("\n".join(lines) + "\n")
         print(f"(report saved to {path})")
     except Exception:
         pass
