@@ -20,5 +20,16 @@ if not exist ".venv\Scripts\python.exe" (
     call ".venv\Scripts\activate.bat"
 )
 
+REM A venv that exists but never finished installing runs diagnostics with
+REM missing packages and produces a misleading report (advisor review item).
+python -c "import cv2, mediapipe, pyautogui" 2>nul
+if errorlevel 1 (
+    echo [Eidak] The environment looks incomplete - packages are missing.
+    echo Run Install-And-Run.bat again to finish the installation first.
+    echo.
+    pause
+    exit /b 1
+)
+
 python hand_gesture_control.py --diagnose
 pause
