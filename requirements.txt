@@ -1,3 +1,7 @@
-mediapipe==0.10.14  # brings opencv-contrib-python (cv2) with it
+mediapipe==0.10.14  # hand tracking; supports Python 3.9 - 3.12 only
 numpy>=1.23.0,<3
+opencv-contrib-python>=4.8,<4.11  # pinned explicitly: mediapipe pulls it transitively
 pyautogui>=0.9.54
+# Optional: global quit hotkey (Ctrl+Alt+Q) even when the window is unfocused.
+# Uncomment to enable:
+# keyboard>=0.13.5

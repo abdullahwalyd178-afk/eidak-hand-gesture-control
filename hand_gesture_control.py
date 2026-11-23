@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import logging.handlers
 import math
 import os
 import platform
@@ -47,12 +49,25 @@ try:
 except Exception:  # headless machines / missing display - handled at runtime
     pyautogui = None
 
+try:  # optional: global quit hotkey (Ctrl+Alt+Q) even when the window is unfocused
+    import keyboard  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    keyboard = None
+
 
 # --------------------------------------------------------------------------
 # Module split (step 0): camera handling and gesture logic live in their own
 # modules and are re-exported here, so existing imports keep working.
 # --------------------------------------------------------------------------
-from camera import CameraManager, diagnose_cameras
+from camera import (
+    CameraManager,
+    diagnose_cameras,
+    list_cameras,
+    NO_DEVICE,
+    OPENED_NO_FRAMES,
+    BLACK_FRAMES,
+    PRIVACY_HINT,
+)
 from gestures import (
     WRIST,
     THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP,
@@ -78,8 +93,13 @@ from gestures import (
 
 DEFAULT_CONFIG = {
     "camera_index": -1,            # -1 = auto-probe all cameras
-    "frame_width": 1280,
-    "frame_height": 720,
+    "camera_strict": False,        # True = only try camera_index (--camera)
+    "last_camera": None,           # learned: {"index": int, "backend": int}
+    "skip_grayscale_cameras": True,  # skip IR/virtual grayscale cameras when probing
+    "mjpg": True,                  # request MJPG compression (USB bandwidth)
+    "freeze_reconnect_sec": 4.0,   # identical frames for this long = frozen camera
+    "frame_width": 640,            # 640x480 keeps CPU low on modest hardware
+    "frame_height": 480,
     "max_num_hands": 1,
     "detection_confidence": 0.65,
     "tracking_confidence": 0.55,
@@ -128,9 +148,13 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
+    """Write only keys that differ from the defaults (item 16): the file stays
+    small, and new defaults in future versions reach existing installs."""
+    diff = {k: v for k, v in cfg.items() if k not in DEFAULT_CONFIG or DEFAULT_CONFIG[k] != v}
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-            json.dump(cfg, fh, indent=2, ensure_ascii=False)
+        if diff or os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+                json.dump(diff, fh, indent=2, ensure_ascii=False)
     except Exception as exc:
         print(f"[config] could not save config.json ({exc})")
 
@@ -177,7 +201,37 @@ def draw_hud(frame, mode: str, paused: bool, gesture: str, fps: float, status: s
 # --------------------------------------------------------------------------
 # Main application
 # --------------------------------------------------------------------------
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eidak.log")
+
+
+def _setup_logging() -> logging.Logger:
+    """Rotating log file (item 16): recurring problems become diagnosable after
+    the fact instead of living only in a closed console window."""
+    logger = logging.getLogger("eidak")
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        handler = logging.handlers.RotatingFileHandler(
+            LOG_PATH, maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+    return logger
+
+
+def _failsafe_corner_hit() -> bool:
+    """pyautogui's FAILSAFE only fires on its own calls; a user slamming the mouse
+    into a corner between calls would not trip it. Check once per frame (item 3a)."""
+    try:
+        x, y = pyautogui.position()
+        w, h = pyautogui.size()
+        margin = 10  # corner zone in px
+        return (x <= margin and y <= margin) or (x >= w - 1 - margin and y <= margin) \
+            or (x <= margin and y >= h - 1 - margin) or (x >= w - 1 - margin and y >= h - 1 - margin)
+    except Exception:
+        return False
+
+
 def run(cfg: dict) -> int:
+    log = _setup_logging()
     missing = []
     if cv2 is None:
         missing.append("opencv-python")
@@ -192,9 +246,21 @@ def run(cfg: dict) -> int:
         return 1
 
     camera = CameraManager(cfg)
-    if not camera.open():
+    print("Looking for a working camera...")
+    if not camera.open(progress=lambda msg: print("  " + msg)):
         print("Could not open any camera.")
+        if camera.failure_kind == OPENED_NO_FRAMES:
+            print("A camera was found but delivered no frames.")
+            print("  - close other apps that use the camera (Zoom/Teams/Camera app)")
+            print("  - " + PRIVACY_HINT)
+        elif camera.failure_kind == BLACK_FRAMES:
+            print("The camera only sends black or grayscale frames - check the lens cover;")
+            print("an IR-only camera (e.g. Windows Hello) cannot be used for hand tracking.")
+        else:
+            print("No usable camera was detected - check the cable / drivers, that no other")
+            print("app is using the webcam, and the Windows camera privacy settings.")
         print("Run  python hand_gesture_control.py --diagnose  for a full camera report.")
+        log.warning("camera open failed: %s (%s)", camera.failure_kind or NO_DEVICE, camera.last_error)
         return 1
     print(f"Camera {camera.active_index} via {camera.backend_name} is running.")
 
@@ -207,6 +273,7 @@ def run(cfg: dict) -> int:
         max_num_hands=int(cfg["max_num_hands"]),
         min_detection_confidence=float(cfg["detection_confidence"]),
         min_tracking_confidence=float(cfg["tracking_confidence"]),
+        model_complexity=0,  # lighter model: roughly halves CPU per frame (item 15)
     )
     drawing = mp.solutions.drawing_utils
     styles = mp.solutions.drawing_styles
@@ -214,12 +281,49 @@ def run(cfg: dict) -> int:
     window = "Eidak - Hand Gesture PC Control"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
 
+    hotkey_registered = False
+    if keyboard is not None:
+        try:
+            quit_flag = {"quit": False}
+            keyboard.add_hotkey("ctrl+alt+q", lambda: quit_flag.__setitem__("quit", True))
+            hotkey_registered = True
+            print("Global quit hotkey: Ctrl+Alt+Q")
+        except Exception as exc:
+            quit_flag = {"quit": False}
+            log.info("keyboard hotkey unavailable: %s", exc)
+    else:
+        quit_flag = {"quit": False}
+
+    def _emergency_stop(reason: str) -> None:
+        try:
+            dispatcher.release_all(force=True)
+        except Exception:
+            pass
+        print(reason)
+        log.warning("emergency stop: %s", reason)
+
     prev_t = time.time()
     fps = 0.0
+    frame_errors = 0          # consecutive per-frame failures (item 16)
+    idle_since = None         # last time a hand was seen; idle = slow down (item 15)
+    idle_frame = 0
     print("Running. Q quits, M switches mouse/video mode, P pauses.")
+    log.info("run started (camera %s via %s)", camera.active_index, camera.backend_name)
     try:
         while True:
-            ok, frame, status = camera.read()
+            if quit_flag["quit"]:
+                print("Quit hotkey pressed.")
+                break
+            try:
+                ok, frame, status = camera.read()
+            except Exception as exc:
+                frame_errors += 1
+                log.exception("camera read error #%d", frame_errors)
+                if frame_errors >= 30:
+                    _emergency_stop(f"Too many camera errors ({frame_errors}); stopping.")
+                    return 1
+                time.sleep(0.05)
+                continue
             if not ok:
                 canvas = np.zeros((480, 800, 3), dtype=np.uint8)
                 draw_hud(canvas, dispatcher.mode, dispatcher.paused, "", fps,
@@ -227,31 +331,70 @@ def run(cfg: dict) -> int:
                 cv2.imshow(window, canvas)
                 if cv2.waitKey(30) & 0xFF == ord("q"):
                     break
+                if _window_closed(window):
+                    break
                 continue
 
             frame = cv2.flip(frame, 1)  # selfie view: hand right = cursor right
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            results = hands.process(rgb)
 
-            lm = None
-            if results.multi_hand_landmarks:
-                lm = [(p.x, p.y, p.z) for p in results.multi_hand_landmarks[0].landmark]
-                if cfg.get("show_landmarks", True):
-                    drawing.draw_landmarks(
-                        frame,
-                        results.multi_hand_landmarks[0],
-                        mp.solutions.hands.HAND_CONNECTIONS,
-                        styles.get_default_hand_landmarks_style(),
-                        styles.get_default_hand_connections_style(),
-                    )
+            # When no hand has been around for a while, process every 3rd frame:
+            # hand tracking is the expensive part (item 15).
+            idle = idle_since is not None and (time.time() - idle_since) > 5.0
+            if idle:
+                idle_frame += 1
+                if idle_frame % 3 != 0:
+                    cv2.imshow(window, frame)
+                    key = cv2.waitKey(10) & 0xFF
+                    if key == ord("q") or _window_closed(window):
+                        break
+                    continue
 
-            now = time.time()
-            state, events = pipeline.process(lm, now)
             try:
-                dispatcher.handle(events, state)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb.flags.writeable = False
+                results = hands.process(rgb)
+
+                lm = None
+                if results.multi_hand_landmarks:
+                    lm = [(p.x, p.y, p.z) for p in results.multi_hand_landmarks[0].landmark]
+                    if cfg.get("show_landmarks", True):
+                        drawing.draw_landmarks(
+                            frame,
+                            results.multi_hand_landmarks[0],
+                            mp.solutions.hands.HAND_CONNECTIONS,
+                            styles.get_default_hand_landmarks_style(),
+                            styles.get_default_hand_connections_style(),
+                        )
+
+                now = time.time()
+                state, events = pipeline.process(lm, now)
+                if state.found:
+                    idle_since = now
+                    idle_frame = 0
+                elif idle_since is None:
+                    idle_since = now
+                try:
+                    dispatcher.handle(events, state)
+                except pyautogui.FailSafeException:
+                    # Never leave a held button or drag state behind on emergency stop;
+                    # a cleanup failure must not block the stop itself.
+                    _emergency_stop("Emergency stop triggered (mouse in screen corner).")
+                    break
+                frame_errors = 0
             except pyautogui.FailSafeException:
-                print("Emergency stop triggered (mouse in screen corner).")
+                _emergency_stop("Emergency stop triggered (mouse in screen corner).")
+                break
+            except Exception as exc:
+                frame_errors += 1
+                log.exception("frame processing error #%d", frame_errors)
+                if frame_errors >= 30:
+                    _emergency_stop(f"Too many processing errors ({frame_errors}); stopping.")
+                    return 1
+                continue
+
+            # Per-frame fail-safe check: catches corner-slams between pyautogui calls (item 3a)
+            if _failsafe_corner_hit():
+                _emergency_stop("Emergency stop triggered (mouse in screen corner).")
                 break
 
             dt = now - prev_t
@@ -263,7 +406,7 @@ def run(cfg: dict) -> int:
                      fps, dispatcher.notice or status, camera.low_light, state.found)
             cv2.imshow(window, frame)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(1 if not idle else 10) & 0xFF
             if key == ord("q"):
                 break
             elif key == ord("m"):
@@ -276,9 +419,18 @@ def run(cfg: dict) -> int:
             elif key == ord("-"):
                 cfg["sensitivity"] = round(max(0.4, float(cfg["sensitivity"]) - 0.1), 2)
                 print("Sensitivity:", cfg["sensitivity"])
+
+            # Clicking the window's X must also quit (item 4)
+            if _window_closed(window):
+                break
     except KeyboardInterrupt:
         pass
     finally:
+        if hotkey_registered and keyboard is not None:
+            try:
+                keyboard.unhook_all_hotkeys()
+            except Exception:
+                pass
         try:
             dispatcher.release_all(force=True)  # never leave a mouse button held down
         except Exception:
@@ -287,14 +439,24 @@ def run(cfg: dict) -> int:
         hands.close()
         camera.release()
         cv2.destroyAllWindows()
+        log.info("run stopped")
     print("Stopped.")
     return 0
+
+
+def _window_closed(window: str) -> bool:
+    """True when the user clicked the window's X (item 4)."""
+    try:
+        return cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1
+    except Exception:
+        return False
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Eidak - hand gesture PC control")
     parser.add_argument("--mode", choices=["mouse", "media"], help="starting mode")
-    parser.add_argument("--camera", type=int, help="force a camera index")
+    parser.add_argument("--camera", type=int, help="force a camera index (strict: no fallback)")
+    parser.add_argument("--list-cameras", action="store_true", help="list detected cameras and exit")
     parser.add_argument("--sensitivity", type=float, help="cursor sensitivity 0.4 - 3.0")
     parser.add_argument("--diagnose", action="store_true", help="camera diagnostics and exit")
     args = parser.parse_args(argv)
@@ -304,9 +466,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         cfg["start_mode"] = args.mode
     if args.camera is not None:
         cfg["camera_index"] = args.camera
+        cfg["camera_strict"] = True  # --camera means THIS camera, not a hint (item 12)
     if args.sensitivity:
         cfg["sensitivity"] = args.sensitivity
 
+    if args.list_cameras:
+        return list_cameras(cfg)
     if args.diagnose:
         return diagnose_cameras(cfg)
     return run(cfg)
