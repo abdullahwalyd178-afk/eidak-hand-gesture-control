@@ -68,6 +68,8 @@ from gestures import (
     classify_hand,
     GestureEvent,
     GestureEngine,
+    HandStabilizer,
+    GesturePipeline,
     PyAutoSink,
     NullSink,
     Dispatcher,
@@ -84,7 +86,7 @@ DEFAULT_CONFIG = {
     "smoothing": 0.35,             # 0..1, higher = steadier cursor
     "sensitivity": 1.4,            # cursor speed multiplier
     "control_margin": 0.18,        # camera-area margin mapped to full screen
-    "click_debounce_sec": 0.25,
+    "click_debounce_sec": 0.12,    # must stay well below double_click_window_sec
     "double_click_window_sec": 0.40,
     "drag_hold_sec": 0.30,
     "scroll_gain": 900,
@@ -100,6 +102,13 @@ DEFAULT_CONFIG = {
     "show_landmarks": True,
     "low_light_threshold": 35,
     "edge_margin_px": 4,           # keep cursor off exact corners (fail-safe)
+    # --- stabilizer (anti false-positive layer, see gestures.HandStabilizer) ---
+    "stab_window_frames": 5,       # majority vote over the last N frames
+    "pinch_release_ratio": 0.50,   # pinch hysteresis: enters at pinch_ratio, leaves above this
+    "pinch_confirm_frames": 2,     # a pinch must persist this many frames to count
+    "settle_sec": 0.35,            # ignore gestures right after the hand appears
+    "lost_grace_sec": 0.15,        # tolerate short tracking dropouts
+    "pause_hold_sec": 1.5,         # long open-palm hold = pause/resume in video mode
 }
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -190,7 +199,7 @@ def run(cfg: dict) -> int:
     print(f"Camera {camera.active_index} via {camera.backend_name} is running.")
 
     sink = PyAutoSink()
-    engine = GestureEngine(cfg)
+    pipeline = GesturePipeline(cfg)
     dispatcher = Dispatcher(sink, cfg)
 
     hands = mp.solutions.hands.Hands(
@@ -225,10 +234,9 @@ def run(cfg: dict) -> int:
             rgb.flags.writeable = False
             results = hands.process(rgb)
 
-            state = HandState()
+            lm = None
             if results.multi_hand_landmarks:
                 lm = [(p.x, p.y, p.z) for p in results.multi_hand_landmarks[0].landmark]
-                state = classify_hand(lm, float(cfg["pinch_ratio"]))
                 if cfg.get("show_landmarks", True):
                     drawing.draw_landmarks(
                         frame,
@@ -239,7 +247,7 @@ def run(cfg: dict) -> int:
                     )
 
             now = time.time()
-            events = engine.update(state, now)
+            state, events = pipeline.process(lm, now)
             try:
                 dispatcher.handle(events, state)
             except pyautogui.FailSafeException:
@@ -251,7 +259,7 @@ def run(cfg: dict) -> int:
             if dt > 0:
                 fps = 0.9 * fps + 0.1 * (1.0 / dt)
 
-            draw_hud(frame, dispatcher.mode, dispatcher.paused, engine.last_gesture,
+            draw_hud(frame, dispatcher.mode, dispatcher.paused, pipeline.last_gesture,
                      fps, dispatcher.notice or status, camera.low_light, state.found)
             cv2.imshow(window, frame)
 
@@ -271,6 +279,10 @@ def run(cfg: dict) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            dispatcher.release_all(force=True)  # never leave a mouse button held down
+        except Exception:
+            pass
         save_config(cfg)
         hands.close()
         camera.release()
