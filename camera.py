@@ -148,10 +148,12 @@ class CameraManager:
                     got += 1
             else:
                 time.sleep(0.05)
-        if got >= need:
+        # OK only when we actually collected `need` good frames: one lucky
+        # bright frame is not proof of a healthy stream (advisor review fix).
+        if got >= need and last is not None:
             return classify_attempt(True, True, float(np.mean(last))), last
-        if last is not None:
-            return classify_attempt(True, True, float(np.mean(last))), last
+        if last is not None and float(np.mean(last)) <= 5.0:
+            return classify_attempt(True, True, float(np.mean(last))), last  # black frames
         return classify_attempt(True, False, 0.0), None
 
     # -- open / close ---------------------------------------------------------
@@ -254,7 +256,17 @@ class CameraManager:
         """Returns (ok, frame, status_message). Reconnects automatically in
         short non-blocking attempts (item 13)."""
         if self.cap is None:
-            return False, None, "Camera is not open"
+            # The old handle was released after a failure; retry the quick
+            # reopen on the same backoff instead of giving up entirely.
+            if self.active_index is None or self.active_backend is None:
+                return False, None, "Camera is not open"
+            now = time.time()
+            if now - self._last_reconnect_attempt >= self._reconnect_delay:
+                self._last_reconnect_attempt = now
+                if self._quick_reopen():
+                    return False, None, "Camera reconnected"
+                self._reconnect_delay = min(self._reconnect_delay * 2, float(self.cfg["camera_reconnect_max_sec"]))
+            return False, None, "Reconnecting camera... check the cable or close other camera apps"
         try:
             ok, frame = self.cap.read()
         except Exception as exc:
@@ -286,18 +298,26 @@ class CameraManager:
         now = time.time()
         if now - self._last_reconnect_attempt >= self._reconnect_delay:
             self._last_reconnect_attempt = now
+            # Release the OLD handle BEFORE retrying: many Windows cameras allow
+            # only one connection, so keeping the broken handle open makes every
+            # later reopen attempt fail (advisor review fix).
+            self._release_handle()
             if self._quick_reopen():
                 return False, None, "Camera reconnected"
             self._reconnect_delay = min(self._reconnect_delay * 2, float(self.cfg["camera_reconnect_max_sec"]))
         return False, None, "Reconnecting camera... check the cable or close other camera apps"
 
-    def release(self) -> None:
-        if self.cap is not None:
+    def _release_handle(self) -> None:
+        old = self.cap
+        self.cap = None
+        if old is not None:
             try:
-                self.cap.release()
+                old.release()
             except Exception:
                 pass
-        self.cap = None
+
+    def release(self) -> None:
+        self._release_handle()
 
 
 # --------------------------------------------------------------------------
@@ -389,7 +409,7 @@ def _write_report(lines: List[str]) -> None:
         import os
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "camera-report.txt")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + "\n")
+            fh.write("\\n".join(lines) + "\\n")
         print(f"(report saved to {path})")
     except Exception:
         pass
