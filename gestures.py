@@ -68,6 +68,7 @@ class HandState:
     index_reach: float = 0.0           # tip-to-wrist distance / hand size
     middle_reach: float = 0.0
     settled: bool = True               # False while the hand has just appeared
+    stale: bool = False                # True for a replayed dropout-grace frame (no new gestures)
 
     def count_up(self) -> int:
         return sum(1 for v in self.fingers_up.values() if v)
@@ -146,6 +147,11 @@ class HandStabilizer:
         self._hist: Deque[HandState] = deque(maxlen=n)
         self._pinch = {"index": False, "middle": False}
         self._run = {"index": 0, "middle": 0}
+        # A pinch may only be ARMED by an open/released frame observed while
+        # the hand is settled. A hand that enters the frame already pinching
+        # (or keeps holding that pinch) never produces a click; the first
+        # deliberate pinch after a settled open frame works normally.
+        self._released_seen = {"index": False, "middle": False}
         self._first_seen: Optional[float] = None
         self._last_seen: Optional[float] = None
         self._last_out: Optional[HandState] = None
@@ -154,7 +160,7 @@ class HandStabilizer:
     def _vote(values: List[bool]) -> bool:
         return sum(1 for v in values if v) * 2 > len(values)
 
-    def _update_pinch(self, key: str, ratio: float, reach: float) -> bool:
+    def _update_pinch(self, key: str, ratio: float, reach: float, settled: bool) -> bool:
         enter = float(self.cfg["pinch_ratio"])
         leave = float(self.cfg.get("pinch_release_ratio", 0.50))
         confirm = max(1, int(self.cfg.get("pinch_confirm_frames", 2)))
@@ -163,10 +169,19 @@ class HandStabilizer:
             if ratio > leave or reach < 1.0:
                 self._pinch[key] = False
                 self._run[key] = 0
+                if settled:
+                    self._released_seen[key] = True
+        elif ratio > leave and settled:
+            # openly released while settled: the next pinch is deliberate
+            self._released_seen[key] = True
+            self._run[key] = 0
         elif ratio < enter and reach > 1.2:
-            self._run[key] += 1
-            if self._run[key] >= confirm:
-                self._pinch[key] = True
+            if settled and self._released_seen[key]:
+                self._run[key] += 1
+                if self._run[key] >= confirm:
+                    self._pinch[key] = True
+                    self._released_seen[key] = False
+            # not armed: a pinch already held at/after entry is ignored, not queued
         else:
             self._run[key] = 0
         return self._pinch[key]
@@ -175,7 +190,9 @@ class HandStabilizer:
         grace = float(self.cfg.get("lost_grace_sec", 0.15))
         if not raw.found:
             if self._last_out is not None and self._last_seen is not None and now - self._last_seen <= grace:
-                return self._last_out  # short dropout: keep the last known state
+                # short dropout: keep the last known position/state for continuity,
+                # but mark it STALE so the engine never acts on replayed data
+                return replace(self._last_out, stale=True)
             self.reset()
             return HandState()
 
@@ -194,8 +211,8 @@ class HandStabilizer:
             fingers_up=fingers,
             thumb_up=self._vote([h.thumb_up for h in hist]),
             thumb_extended=self._vote([h.thumb_extended for h in hist]),
-            pinch_index=self._update_pinch("index", raw.pinch_index_ratio, raw.index_reach),
-            pinch_middle=self._update_pinch("middle", raw.pinch_middle_ratio, raw.middle_reach),
+            pinch_index=self._update_pinch("index", raw.pinch_index_ratio, raw.index_reach, settled),
+            pinch_middle=self._update_pinch("middle", raw.pinch_middle_ratio, raw.middle_reach, settled),
             settled=settled,
         )
         self._last_out = out
@@ -294,6 +311,8 @@ class GestureEngine:
         events: List[GestureEvent] = []
         if not state.found:
             return self.reset()
+        if state.stale:  # dropout-grace replay: continuity only, no new gestures or timers
+            return events
         if not state.settled:  # the hand has only just appeared: do nothing yet
             return events
 
@@ -598,7 +617,8 @@ class Dispatcher:
             x, y = self._map_to_screen(state.index_tip)
             self.sink.move_to(x, y)
         elif ev.name == "LEFT_CLICK":
-            self._click_pos = self._smooth
+            # remember THIS click's position (freshly mapped, not cached smoothing)
+            self._click_pos = self._map_to_screen(state.index_tip)
             self.sink.left_click()
         elif ev.name == "RIGHT_CLICK":
             self.sink.right_click()

@@ -328,10 +328,11 @@ def settle(lm, t0=100.0, n=14, dt=0.033):
 def test_drag_is_released_when_hand_is_lost():
     pipe, sink = GesturePipeline(cfg()), NullSink()
     disp = Dispatcher(sink, cfg())
-    pinch = pinch_at(0.2)
-    run_pipe(pipe, disp, settle(pinch, 100.0, n=25))           # long pinch -> drag
+    idle, pinch = make_landmarks(up=("index",)), pinch_at(0.2)
+    run_pipe(pipe, disp, settle(idle, 100.0, n=14))            # hand enters open, settles
+    run_pipe(pipe, disp, [(100.5 + i * 0.033, pinch) for i in range(15)])  # then pinches -> drag
     assert ("drag_start", ()) in sink.calls, sink.calls
-    run_pipe(pipe, disp, [(101.0 + i * 0.033, None) for i in range(12)])  # hand leaves
+    run_pipe(pipe, disp, [(101.2 + i * 0.033, None) for i in range(12)])  # hand leaves
     assert ("drag_end", ()) in sink.calls, "mouse button would stay down"
     print("ok drag released on hand loss")
 
@@ -340,7 +341,8 @@ def test_drag_is_released_on_mode_switch_and_pause():
     for how in ("mode", "pause"):
         pipe, sink = GesturePipeline(cfg()), NullSink()
         disp = Dispatcher(sink, cfg())
-        run_pipe(pipe, disp, settle(pinch_at(0.2), 100.0, n=25))
+        run_pipe(pipe, disp, settle(make_landmarks(up=("index",)), 100.0, n=14))
+        run_pipe(pipe, disp, [(100.5 + i * 0.033, pinch_at(0.2)) for i in range(15)])
         assert ("drag_start", ()) in sink.calls
         if how == "mode":
             disp.toggle_mode()
@@ -648,6 +650,65 @@ def test_mouse_up_failure_restores_failsafe_flag():
     print("ok FAILSAFE restored after a failing mouseUp")
 
 
+def test_hand_entering_already_pinched_never_clicks():
+    """A hand that appears mid-pinch and KEEPS holding it must produce no click,
+    even long after the settle window (arming rule, not just delayed confirmation)."""
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    run_pipe(pipe, disp, settle(pinch_at(0.2), 100.0, n=40))   # 1.3 s held pinch from entry
+    assert not real_calls(sink), real_calls(sink)
+    print("ok pinched entry held = never a click")
+
+
+def test_release_then_new_pinch_after_pinched_entry_clicks_once():
+    """After a pinched entry, a real release while settled re-arms; the next
+    deliberate pinch clicks exactly once."""
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    idle = make_landmarks(up=("index",))
+    run_pipe(pipe, disp, settle(pinch_at(0.2), 100.0, n=20))   # pinched entry, held
+    assert not real_calls(sink)
+    run_pipe(pipe, disp, [(100.8 + i * 0.033, idle) for i in range(8)])     # release
+    run_pipe(pipe, disp, [(101.1 + i * 0.033, pinch_at(0.2)) for i in range(5)])  # new pinch
+    run_pipe(pipe, disp, [(101.3 + i * 0.033, idle) for i in range(8)])     # release
+    assert real_calls(sink) == [("left_click", ())], real_calls(sink)
+    print("ok release re-arms, deliberate pinch clicks once")
+
+
+def test_grace_replay_fires_no_new_gestures():
+    """During dropout grace the engine sees stale frames: a hold that would
+    complete during the replay must NOT fire from replayed data."""
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    idle, pinch = make_landmarks(up=("index",)), pinch_at(0.2)
+    run_pipe(pipe, disp, settle(idle, 100.0, n=14))
+    run_pipe(pipe, disp, [(100.5 + i * 0.033, pinch) for i in range(7)])    # 0.23 s pinch
+    # hand vanishes for 0.1 s (inside grace); drag_hold 0.30 s would complete mid-dropout
+    run_pipe(pipe, disp, [(100.75 + i * 0.033, None) for i in range(3)])
+    assert ("drag_start", ()) not in sink.calls, sink.calls   # nothing fired from replay
+    run_pipe(pipe, disp, [(100.9 + i * 0.033, None) for i in range(10)])    # past grace: reset
+    assert not real_calls(sink), real_calls(sink)             # pinch aborted, no click
+    print("ok dropout replay is inert")
+
+
+def test_second_click_position_comes_from_click_frame():
+    """DOUBLE_CLICK's second click must go to the first click's own position,
+    even if no MOVE ever updated the smoothing cache."""
+    from hand_gesture_control import GestureEvent, HandState
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg())
+    st = HandState(found=True, index_tip=(0.3, 0.4, 0.0))
+    disp.handle([GestureEvent("LEFT_CLICK")], st)
+    disp.handle([GestureEvent("DOUBLE_CLICK")], st)
+    calls = [c for c in sink.calls if c[0] != "move_to"]
+    assert [c[0] for c in calls] == ["left_click", "left_click"], sink.calls
+    moves = [c for c in sink.calls if c[0] == "move_to"]
+    assert len(moves) == 1, sink.calls                        # repositioned exactly once
+    expected = disp._map_to_screen((0.3, 0.4, 0.0))
+    assert abs(moves[0][1][0] - expected[0]) < 1e-6, (moves, expected)
+    print("ok second click uses the click frame's own position")
+
+
 if __name__ == "__main__":
     test_classify()
     test_move()
@@ -686,4 +747,8 @@ if __name__ == "__main__":
     test_hand_loss_during_pinch_makes_no_click()
     test_dropout_expiry_does_not_restore_old_state()
     test_mouse_up_failure_restores_failsafe_flag()
+    test_hand_entering_already_pinched_never_clicks()
+    test_release_then_new_pinch_after_pinched_entry_clicks_once()
+    test_grace_replay_fires_no_new_gestures()
+    test_second_click_position_comes_from_click_frame()
     print("ALL TESTS PASSED")
