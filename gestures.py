@@ -223,6 +223,7 @@ class HandStabilizer:
         else:
             self._run[key] = 0
         return self._pinch[key], curl_ended
+
     def update(self, raw: HandState, now: float) -> HandState:
         grace = float(self.cfg.get("lost_grace_sec", 0.15))
         if not raw.found:
