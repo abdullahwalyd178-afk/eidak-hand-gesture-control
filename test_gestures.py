@@ -14,8 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from hand_gesture_control import (
     GestureEngine,
+    GesturePipeline,
     Dispatcher,
     NullSink,
+    PyAutoSink,
     classify_hand,
     DEFAULT_CONFIG,
 )
@@ -289,6 +291,273 @@ def test_no_scroll_during_right_click_pose():
     print("ok no scroll while pinching middle finger")
 
 
+# --------------------------------------------------------------------------
+# Safety + stability (fix/gesture-safety)
+# --------------------------------------------------------------------------
+PALM_KW = dict(up=("index", "middle", "ring", "pinky"), thumb_extended=True)
+
+
+def pinch_at(ratio, shift=(0.0, 0.0)):
+    """Index finger up, thumb tip `ratio` x hand-size away from the index tip."""
+    lm = list(make_landmarks(up=("index",), shift=shift))
+    hand_size = 0.20  # wrist (y .75) to middle MCP (y .55) in make_landmarks
+    tx, ty, tz = lm[INDEX_TIP]
+    lm[THUMB_TIP] = (tx - ratio * hand_size, ty, tz)
+    return lm
+
+
+def run_pipe(pipe, disp, frames):
+    """frames: [(t, landmarks | None)] -> all events seen."""
+    seen = []
+    for t, lm in frames:
+        state, events = pipe.process(lm, t)
+        disp.handle(events, state)
+        seen += events
+    return seen
+
+
+def real_calls(sink):
+    return [c for c in sink.calls if c[0] != "move_to"]
+
+
+def settle(lm, t0=100.0, n=14, dt=0.033):
+    """Frames that let the stabilizer finish its warm-up."""
+    return [(t0 + i * dt, lm) for i in range(n)]
+
+
+def test_drag_is_released_when_hand_is_lost():
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    pinch = pinch_at(0.2)
+    run_pipe(pipe, disp, settle(pinch, 100.0, n=25))           # long pinch -> drag
+    assert ("drag_start", ()) in sink.calls, sink.calls
+    run_pipe(pipe, disp, [(101.0 + i * 0.033, None) for i in range(12)])  # hand leaves
+    assert ("drag_end", ()) in sink.calls, "mouse button would stay down"
+    print("ok drag released on hand loss")
+
+
+def test_drag_is_released_on_mode_switch_and_pause():
+    for how in ("mode", "pause"):
+        pipe, sink = GesturePipeline(cfg()), NullSink()
+        disp = Dispatcher(sink, cfg())
+        run_pipe(pipe, disp, settle(pinch_at(0.2), 100.0, n=25))
+        assert ("drag_start", ()) in sink.calls
+        if how == "mode":
+            disp.toggle_mode()
+        else:
+            disp.paused = True
+        assert ("drag_end", ()) in sink.calls, how
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg())
+    disp.release_all(force=True)
+    assert ("release_all", ()) in sink.calls
+    print("ok drag released on mode switch / pause / forced cleanup")
+
+
+def test_drag_end_event_passes_in_media_mode():
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg())
+    from hand_gesture_control import GestureEvent, HandState
+    disp.handle([GestureEvent("DRAG_START")], HandState(found=True))
+    disp.mode = "media"  # simulates a mode change that bypassed toggle_mode()
+    disp.handle([GestureEvent("DRAG_END")], HandState(found=True))
+    assert ("drag_end", ()) in sink.calls, sink.calls
+    print("ok DRAG_END honoured in any mode")
+
+
+def test_pause_is_honoured_in_media_mode():
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg(start_mode="media"))
+    palm = make_landmarks(**PALM_KW)
+    disp.paused = True
+    run_pipe(pipe, disp, settle(palm, 100.0, n=40))            # 1.3 s palm while paused
+    assert not real_calls(sink), real_calls(sink)
+    disp.handle([__import__("hand_gesture_control").GestureEvent("SWIPE_RIGHT")],
+                __import__("hand_gesture_control").HandState(found=True))
+    assert not real_calls(sink), "paused media mode must not press keys"
+    print("ok pause blocks media actions")
+
+
+def test_long_palm_toggles_pause_in_media_mode():
+    cfg_ = cfg(start_mode="media")
+    pipe, sink = GesturePipeline(cfg_), NullSink()
+    disp = Dispatcher(sink, cfg_)
+    palm = make_landmarks(**PALM_KW)
+    run_pipe(pipe, disp, settle(palm, 100.0, n=60))            # ~2 s hold
+    assert disp.paused, "long palm must pause"
+    sink.calls.clear()
+    run_pipe(pipe, disp, [(102.0 + i * 0.033, None) for i in range(10)])  # hand away
+    run_pipe(pipe, disp, settle(palm, 103.0, n=60))            # long palm again
+    assert not disp.paused, "second long palm must resume"
+    assert ("press", ("space",)) not in sink.calls, "no stray play/pause while paused/resuming"
+    print("ok long palm pauses / resumes video mode")
+
+
+def test_single_frame_pinch_glitch_is_not_a_click():
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    idle = make_landmarks(up=("index",))
+    frames = settle(idle, 100.0, n=14) + [(100.5, pinch_at(0.2))] + \
+        [(100.53 + i * 0.033, idle) for i in range(8)]
+    run_pipe(pipe, disp, frames)
+    assert not real_calls(sink), real_calls(sink)
+    print("ok 1-frame pinch glitch ignored")
+
+
+def test_real_pinch_still_clicks_once():
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    idle = make_landmarks(up=("index",))
+    frames = settle(idle, 100.0, n=14) + [(100.5 + i * 0.033, pinch_at(0.2)) for i in range(5)] + \
+        [(100.7 + i * 0.033, idle) for i in range(8)]
+    run_pipe(pipe, disp, frames)
+    assert real_calls(sink) == [("left_click", ())], real_calls(sink)
+    print("ok real pinch = exactly one click")
+
+
+def test_pinch_hysteresis_wobble_gives_one_click():
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    idle = make_landmarks(up=("index",))
+    wobble = [0.30, 0.30, 0.30, 0.42, 0.30, 0.45, 0.30, 0.30]  # stays inside the 0.35-0.50 band
+    frames = settle(idle, 100.0, n=14)
+    frames += [(100.5 + i * 0.033, pinch_at(r)) for i, r in enumerate(wobble)]
+    frames += [(100.8 + i * 0.033, pinch_at(0.8)) for i in range(8)]
+    run_pipe(pipe, disp, frames)
+    assert real_calls(sink) == [("left_click", ())], real_calls(sink)
+    print("ok pinch wobble inside hysteresis band = one click")
+
+
+def test_hold_survives_one_bad_frame():
+    # The hold starts once the hand has settled (~t=100.36) and needs 0.5 s, so
+    # it fires at ~100.86. A bad frame at ~100.79 would restart it without
+    # voting, and the sequence ends before a restarted hold could finish.
+    cfg_ = cfg(start_mode="media")
+    pipe, sink = GesturePipeline(cfg_), NullSink()
+    disp = Dispatcher(sink, cfg_)
+    palm, other = make_landmarks(**PALM_KW), make_landmarks(up=("index",))
+    frames = [(100.0 + i * 0.033, other if i == 24 else palm) for i in range(37)]
+    run_pipe(pipe, disp, frames)
+    assert ("press", ("space",)) in sink.calls, sink.calls
+    print("ok palm hold survives one bad frame")
+
+
+def test_short_dropout_does_not_restart_everything():
+    cfg_ = cfg(start_mode="media")
+    pipe, sink = GesturePipeline(cfg_), NullSink()
+    disp = Dispatcher(sink, cfg_)
+    palm = make_landmarks(**PALM_KW)
+    frames = [(100.0 + i * 0.033, None if 24 <= i < 27 else palm) for i in range(37)]  # 0.1 s dropout
+    run_pipe(pipe, disp, frames)
+    assert ("press", ("space",)) in sink.calls, sink.calls
+    print("ok 0.1 s tracking dropout is tolerated")
+
+
+def test_hand_entering_fast_is_not_a_swipe():
+    cfg_ = cfg(start_mode="media")
+    pipe, sink = GesturePipeline(cfg_), NullSink()
+    disp = Dispatcher(sink, cfg_)
+    frames = [(100.0 + i * 0.033, make_landmarks(**PALM_KW, shift=(-0.25 + 0.05 * i, 0.0)))
+              for i in range(8)]                              # sweeps in during 0.26 s
+    run_pipe(pipe, disp, frames)
+    assert not real_calls(sink), real_calls(sink)
+    print("ok hand entering the frame is not a swipe")
+
+
+def test_deliberate_swipe_after_settling_still_works():
+    cfg_ = cfg(start_mode="media")
+    pipe, sink = GesturePipeline(cfg_), NullSink()
+    disp = Dispatcher(sink, cfg_)
+    still = make_landmarks(**PALM_KW)
+    frames = settle(still, 100.0, n=16)                       # 0.5 s, settled
+    frames += [(100.6 + i * 0.05, make_landmarks(**PALM_KW, shift=(0.06 * (i + 1), 0.0)))
+               for i in range(6)]
+    run_pipe(pipe, disp, frames)
+    assert ("press", ("right",)) in sink.calls, sink.calls
+    print("ok deliberate swipe still works")
+
+
+def test_double_pinch_is_one_double_click_not_three_clicks():
+    # gap = time between the two pinch RELEASES. 0.20 s is a natural fast double
+    # pinch; the old 0.25 s debounce swallowed it, and 0.30-0.38 s produced
+    # click + doubleClick = a triple-click.
+    idle, pinch = make_landmarks(up=("index",)), pinch_at(0.2)
+    for gap in (0.20, 0.30, 0.38):
+        r1 = 100.6
+        r2 = r1 + gap
+        def pinching(t):
+            return (r1 - 0.12 <= t < r1) or (r2 - 0.12 <= t < r2)
+        frames, t = [], 100.0
+        while t < r2 + 0.3:
+            frames.append((t, pinch if pinching(t) else idle))
+            t += 0.01  # dense timeline so the two releases land where intended
+        pipe, sink = GesturePipeline(cfg()), NullSink()
+        disp = Dispatcher(sink, cfg())
+        run_pipe(pipe, disp, frames)
+        got = [c[0] for c in real_calls(sink)]
+        assert got.count("left_click") == 2 and "double_click" not in got, (gap, got)
+    print("ok double pinch -> exactly two OS clicks, never a triple")
+
+
+def test_old_saved_config_cannot_bring_back_the_swallowed_double_pinch():
+    # config.json written by earlier versions contains click_debounce_sec = 0.25
+    idle, pinch = make_landmarks(up=("index",)), pinch_at(0.2)
+    c = cfg(click_debounce_sec=0.25)
+    r1, r2 = 100.6, 100.8                                     # 0.20 s between releases
+    frames, t_ = [], 100.0
+    while t_ < r2 + 0.3:
+        on = (r1 - 0.12 <= t_ < r1) or (r2 - 0.12 <= t_ < r2)
+        frames.append((t_, pinch if on else idle))
+        t_ += 0.01
+    pipe, sink = GesturePipeline(c), NullSink()
+    run_pipe(pipe, Dispatcher(sink, c), frames)
+    assert [x[0] for x in real_calls(sink)].count("left_click") == 2, real_calls(sink)
+    print("ok persisted 0.25 s debounce no longer swallows a fast double pinch")
+
+
+def test_smoothing_resets_after_hand_loss():
+    from hand_gesture_control import HandState
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg())
+    for _ in range(30):
+        a = disp._map_to_screen((0.2, 0.3, 0.0))
+    disp.handle([], HandState())                              # hand lost
+    b = disp._map_to_screen((0.8, 0.7, 0.0))
+    target = Dispatcher(NullSink(), cfg())._map_to_screen((0.8, 0.7, 0.0))
+    assert abs(b[0] - target[0]) < 1e-6 and abs(b[1] - target[1]) < 1e-6, (a, b, target)
+    print("ok cursor does not sweep after the hand reappears")
+
+
+class _FakePyAutoGUI:
+    def __init__(self):
+        self.FAILSAFE = True
+        self.log = []
+
+    def mouseUp(self, button="left", _pause=False):
+        if self.FAILSAFE:                                     # mouse parked in a corner
+            raise RuntimeError("FailSafeException")
+        self.log.append(("up", button))
+
+    def size(self):
+        return (1920, 1080)
+
+
+def test_mouse_release_survives_armed_failsafe():
+    import sys as _sys
+    mod = _sys.modules[PyAutoSink.__module__]
+    old = mod.pyautogui
+    mod.pyautogui = fake = _FakePyAutoGUI()
+    try:
+        sink = PyAutoSink()
+        sink.drag_end()
+        sink.release_all()
+        assert ("up", "left") in fake.log and ("up", "right") in fake.log, fake.log
+        assert fake.FAILSAFE is True, "fail-safe must be re-armed afterwards"
+    finally:
+        mod.pyautogui = old
+    print("ok mouse-up is delivered even with the fail-safe armed")
+
+
 if __name__ == "__main__":
     test_classify()
     test_move()
@@ -305,4 +574,20 @@ if __name__ == "__main__":
     test_single_fist_never_closes()
     test_continuous_fist_never_confirms()
     test_no_scroll_during_right_click_pose()
+    test_drag_is_released_when_hand_is_lost()
+    test_drag_is_released_on_mode_switch_and_pause()
+    test_drag_end_event_passes_in_media_mode()
+    test_pause_is_honoured_in_media_mode()
+    test_long_palm_toggles_pause_in_media_mode()
+    test_single_frame_pinch_glitch_is_not_a_click()
+    test_real_pinch_still_clicks_once()
+    test_pinch_hysteresis_wobble_gives_one_click()
+    test_hold_survives_one_bad_frame()
+    test_short_dropout_does_not_restart_everything()
+    test_hand_entering_fast_is_not_a_swipe()
+    test_deliberate_swipe_after_settling_still_works()
+    test_double_pinch_is_one_double_click_not_three_clicks()
+    test_old_saved_config_cannot_bring_back_the_swallowed_double_pinch()
+    test_smoothing_resets_after_hand_loss()
+    test_mouse_release_survives_armed_failsafe()
     print("ALL TESTS PASSED")

@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Deque, Dict, List, Optional, Tuple
 
 try:
@@ -61,6 +61,13 @@ class HandState:
     index_tip: Point = (0.5, 0.5, 0.0)
     centroid: Point = (0.5, 0.5, 0.0)
     landmarks: Optional[Landmarks] = None
+    # raw measurements used by HandStabilizer (hysteresis needs the numbers,
+    # not just the booleans)
+    pinch_index_ratio: float = 9.0     # thumb-index distance / hand size
+    pinch_middle_ratio: float = 9.0
+    index_reach: float = 0.0           # tip-to-wrist distance / hand size
+    middle_reach: float = 0.0
+    settled: bool = True               # False while the hand has just appeared
 
     def count_up(self) -> int:
         return sum(1 for v in self.fingers_up.values() if v)
@@ -88,6 +95,10 @@ def classify_hand(lm: Landmarks, pinch_ratio: float = 0.35) -> HandState:
     extended_out = lambda tip: dist(lm[tip], lm[WRIST]) > hand_size * 1.2
     pinch_index = dist(lm[THUMB_TIP], lm[INDEX_TIP]) < hand_size * pinch_ratio and extended_out(INDEX_TIP)
     pinch_middle = dist(lm[THUMB_TIP], lm[MIDDLE_TIP]) < hand_size * pinch_ratio and extended_out(MIDDLE_TIP)
+    pinch_index_ratio = dist(lm[THUMB_TIP], lm[INDEX_TIP]) / hand_size
+    pinch_middle_ratio = dist(lm[THUMB_TIP], lm[MIDDLE_TIP]) / hand_size
+    index_reach = dist(lm[INDEX_TIP], lm[WRIST]) / hand_size
+    middle_reach = dist(lm[MIDDLE_TIP], lm[WRIST]) / hand_size
 
     cx = sum(p[0] for p in lm) / len(lm)
     cy = sum(p[1] for p in lm) / len(lm)
@@ -102,7 +113,113 @@ def classify_hand(lm: Landmarks, pinch_ratio: float = 0.35) -> HandState:
         index_tip=lm[INDEX_TIP],
         centroid=(cx, cy, 0.0),
         landmarks=lm,
+        pinch_index_ratio=pinch_index_ratio,
+        pinch_middle_ratio=pinch_middle_ratio,
+        index_reach=index_reach,
+        middle_reach=middle_reach,
     )
+
+
+# --------------------------------------------------------------------------
+# Stabilizer: per-frame guesses -> trustworthy state
+# --------------------------------------------------------------------------
+class HandStabilizer:
+    """Sits between classify_hand() and GestureEngine.
+
+    - majority vote over the last N frames for finger/thumb booleans, so one
+      bad frame neither fires nor cancels a gesture;
+    - pinch hysteresis (enter below `pinch_ratio`, leave above
+      `pinch_release_ratio`) plus a confirmation count, so a one-frame
+      glitch is not a click;
+    - `settled` stays False for `settle_sec` after the hand appears, so a hand
+      sweeping into the frame cannot read as a swipe or a hold;
+    - a short dropout (`lost_grace_sec`) keeps the last state instead of
+      restarting everything.
+    """
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.reset()
+
+    def reset(self) -> None:
+        n = max(1, int(self.cfg.get("stab_window_frames", 5)))
+        self._hist: Deque[HandState] = deque(maxlen=n)
+        self._pinch = {"index": False, "middle": False}
+        self._run = {"index": 0, "middle": 0}
+        self._first_seen: Optional[float] = None
+        self._last_seen: Optional[float] = None
+        self._last_out: Optional[HandState] = None
+
+    @staticmethod
+    def _vote(values: List[bool]) -> bool:
+        return sum(1 for v in values if v) * 2 > len(values)
+
+    def _update_pinch(self, key: str, ratio: float, reach: float) -> bool:
+        enter = float(self.cfg["pinch_ratio"])
+        leave = float(self.cfg.get("pinch_release_ratio", 0.50))
+        confirm = max(1, int(self.cfg.get("pinch_confirm_frames", 2)))
+        if self._pinch[key]:
+            # leave when the fingers separate OR the finger folds into the palm
+            if ratio > leave or reach < 1.0:
+                self._pinch[key] = False
+                self._run[key] = 0
+        elif ratio < enter and reach > 1.2:
+            self._run[key] += 1
+            if self._run[key] >= confirm:
+                self._pinch[key] = True
+        else:
+            self._run[key] = 0
+        return self._pinch[key]
+
+    def update(self, raw: HandState, now: float) -> HandState:
+        grace = float(self.cfg.get("lost_grace_sec", 0.15))
+        if not raw.found:
+            if self._last_out is not None and self._last_seen is not None and now - self._last_seen <= grace:
+                return self._last_out  # short dropout: keep the last known state
+            self.reset()
+            return HandState()
+
+        if self._last_seen is None:
+            self._first_seen = now
+        self._last_seen = now
+        self._hist.append(raw)
+        hist = list(self._hist)
+
+        fingers = {name: self._vote([h.fingers_up.get(name, False) for h in hist]) for name in FINGERS}
+        settled = (now - (self._first_seen if self._first_seen is not None else now)) >= float(
+            self.cfg.get("settle_sec", 0.35)
+        )
+        out = replace(
+            raw,
+            fingers_up=fingers,
+            thumb_up=self._vote([h.thumb_up for h in hist]),
+            thumb_extended=self._vote([h.thumb_extended for h in hist]),
+            pinch_index=self._update_pinch("index", raw.pinch_index_ratio, raw.index_reach),
+            pinch_middle=self._update_pinch("middle", raw.pinch_middle_ratio, raw.middle_reach),
+            settled=settled,
+        )
+        self._last_out = out
+        return out
+
+
+class GesturePipeline:
+    """landmarks -> classify -> stabilize -> gesture events (one call per frame)."""
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.stabilizer = HandStabilizer(cfg)
+        self.engine = GestureEngine(cfg)
+
+    @property
+    def last_gesture(self) -> str:
+        return self.engine.last_gesture
+
+    def process(self, landmarks: Optional[Landmarks], now: Optional[float] = None):
+        """Returns (stabilized HandState, [GestureEvent]). Pass None when no hand."""
+        now = time.time() if now is None else now
+        raw = classify_hand(landmarks, float(self.cfg["pinch_ratio"])) if landmarks else HandState()
+        state = self.stabilizer.update(raw, now)
+        return state, self.engine.update(state, now)
 
 
 # --------------------------------------------------------------------------
@@ -124,7 +241,7 @@ class GestureEngine:
         self._pinch_middle_down = False
         self._pinch_press_t = 0.0
         self._dragging = False
-        self._last_click_t = 0.0
+        self._last_click_t = -1e9
         self._last_event_t: Dict[str, float] = {}
         self._hold_start: Dict[str, float] = {}
         self._fired_holds: set = set()
@@ -133,7 +250,12 @@ class GestureEngine:
     # -- helpers -----------------------------------------------------------
     def _cooled_down(self, name: str, now: float) -> bool:
         if name == "click":
-            return now - self._last_event_t.get(name, -10.0) >= float(self.cfg["click_debounce_sec"])
+            # config.json files saved by older versions still carry 0.25 s, which
+            # swallows a fast double pinch. Whatever the config says, the
+            # debounce must stay well below the double-click window.
+            debounce = min(float(self.cfg["click_debounce_sec"]),
+                           0.3 * float(self.cfg["double_click_window_sec"]))
+            return now - self._last_event_t.get(name, -10.0) >= debounce
         return now - self._last_event_t.get(name, -10.0) >= float(self.cfg["gesture_cooldown_sec"])
 
     def _mark(self, name: str, now: float) -> None:
@@ -152,20 +274,27 @@ class GestureEngine:
             self._fired_holds.discard(key)
         return False
 
-    def reset(self) -> None:
+    def reset(self) -> List["GestureEvent"]:
+        """Forget all temporal state. Returns the events that must still be
+        delivered: a drag in progress MUST end, or the mouse button stays down."""
+        events: List[GestureEvent] = []
+        if self._dragging:
+            events.append(GestureEvent("DRAG_END"))
         self._centroid_hist.clear()
         self._pinch_index_down = False
         self._pinch_middle_down = False
         self._dragging = False
         self._hold_start.clear()
         self._fired_holds.clear()
+        return events
 
     # -- main --------------------------------------------------------------
     def update(self, state: HandState, now: Optional[float] = None) -> List[GestureEvent]:
         now = time.time() if now is None else now
         events: List[GestureEvent] = []
         if not state.found:
-            self.reset()
+            return self.reset()
+        if not state.settled:  # the hand has only just appeared: do nothing yet
             return events
 
         cx, cy, _ = state.centroid
@@ -248,6 +377,10 @@ class GestureEngine:
             events.append(GestureEvent("PALM"))
             self._mark("palm", now)
 
+        pause_palm = up >= 4 and state.thumb_extended and not pinch_now
+        if self._update_hold("pausepalm", pause_palm, float(self.cfg.get("pause_hold_sec", 1.5)), now):
+            events.append(GestureEvent("PAUSE_TOGGLE"))
+
         fist = up == 0 and not state.thumb_extended and not pinch_now
         if self._update_hold("fist", fist, float(self.cfg["fist_hold_sec"]), now) and self._cooled_down("fist", now):
             events.append(GestureEvent("FIST"))
@@ -299,9 +432,29 @@ class PyAutoSink:
         self._dragging = True
         pyautogui.mouseDown(_pause=False)
 
+    def _mouse_up(self, button: str = "left") -> None:
+        # A button release must ALWAYS get through. If the fail-safe is armed
+        # (mouse parked in a corner) pyautogui would raise instead of releasing
+        # and leave the button stuck down.
+        armed = pyautogui.FAILSAFE
+        pyautogui.FAILSAFE = False
+        try:
+            pyautogui.mouseUp(button=button, _pause=False)
+        finally:
+            pyautogui.FAILSAFE = armed
+
     def drag_end(self) -> None:
         self._dragging = False
-        pyautogui.mouseUp(_pause=False)
+        self._mouse_up("left")
+
+    def release_all(self) -> None:
+        """Last-resort cleanup (exit / crash): release every mouse button."""
+        self._dragging = False
+        for button in ("left", "right"):
+            try:
+                self._mouse_up(button)
+            except Exception:
+                pass
 
     def scroll(self, amount: float) -> None:
         if amount:
@@ -332,6 +485,7 @@ class NullSink:
     def double_click(self): self._rec("double_click")
     def drag_start(self): self._rec("drag_start")
     def drag_end(self): self._rec("drag_end")
+    def release_all(self): self._rec("release_all")
     def scroll(self, amount): self._rec("scroll", amount)
     def press(self, key): self._rec("press", key)
     def hotkey(self, *keys): self._rec("hotkey", *keys)
@@ -345,12 +499,46 @@ class Dispatcher:
         self.sink = sink
         self.cfg = cfg
         self.mode = cfg.get("start_mode", "mouse")
-        self.paused = False
+        self._paused = False
         self._smooth: Optional[Tuple[float, float]] = None
+        self._drag_down = False        # we sent mouseDown and still owe a mouseUp
+        self._click_pos: Optional[Tuple[float, float]] = None
         self._fist_armed_until = 0.0   # destructive close needs a double-fist
         self.notice = ""               # transient HUD message
 
+    # -- pause ----------------------------------------------------------------
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    @paused.setter
+    def paused(self, value: bool) -> None:
+        value = bool(value)
+        if value and not self._paused:
+            self._end_drag()
+            self._fist_armed_until = 0.0
+            self.notice = ""
+        self._paused = value
+
+    # -- safe state transitions ------------------------------------------------
+    def _end_drag(self) -> None:
+        if self._drag_down:
+            self._drag_down = False
+            self.sink.drag_end()
+
+    def release_all(self, force: bool = False) -> None:
+        """Drop everything held or armed. `force=True` additionally tells the
+        sink to release every mouse button (use it on exit / error paths)."""
+        self._end_drag()
+        self._smooth = None
+        self._click_pos = None
+        self._fist_armed_until = 0.0
+        self.notice = ""
+        if force:
+            self.sink.release_all()
+
     def toggle_mode(self) -> str:
+        self.release_all()  # never carry a held button or an armed close across modes
         self.mode = "media" if self.mode == "mouse" else "mouse"
         return self.mode
 
@@ -380,38 +568,54 @@ class Dispatcher:
         return self._smooth
 
     def handle(self, events: List[GestureEvent], state: HandState) -> None:
+        if not state.found:
+            self._smooth = None  # the next appearance must not glide from a stale spot
         if self._fist_armed_until and time.monotonic() > self._fist_armed_until:
             self._fist_armed_until = 0.0
             self.notice = ""
         for ev in events:
-            if self.mode == "mouse":
+            # Safety events are honoured in EVERY mode and while paused.
+            if ev.name == "DRAG_END":
+                self._end_drag()
+            elif ev.name == "PAUSE_TOGGLE":
+                if self.mode == "media":  # in mouse mode a plain palm hold already toggles
+                    self.paused = not self._paused
+            elif self.mode == "mouse":
                 self._handle_mouse(ev, state)
             else:
                 self._handle_media(ev, state)
 
     def _handle_mouse(self, ev: GestureEvent, state: HandState) -> None:
         if ev.name == "PALM":
-            self.paused = not self.paused
+            self.paused = not self._paused
             return
-        if self.paused:
+        if self._paused:
             return
         if ev.name == "MOVE":
             x, y = self._map_to_screen(state.index_tip)
             self.sink.move_to(x, y)
         elif ev.name == "LEFT_CLICK":
+            self._click_pos = self._smooth
             self.sink.left_click()
         elif ev.name == "RIGHT_CLICK":
             self.sink.right_click()
         elif ev.name == "DOUBLE_CLICK":
-            self.sink.double_click()
+            # The first click of the pair was already sent. Send only the SECOND
+            # click, at the same spot, so Windows sees exactly one double-click
+            # (sending doubleClick() here made it a triple-click).
+            if self._click_pos is not None:
+                self.sink.move_to(*self._click_pos)
+            self.sink.left_click()
+            self._click_pos = None
         elif ev.name == "DRAG_START":
+            self._drag_down = True
             self.sink.drag_start()
-        elif ev.name == "DRAG_END":
-            self.sink.drag_end()
         elif ev.name == "SCROLL":
             self.sink.scroll(-ev.value * float(self.cfg["scroll_gain"]))
 
     def _handle_media(self, ev: GestureEvent, state: HandState) -> None:
+        if self._paused:
+            return
         # Closing is destructive (Ctrl+W hits whatever window has focus), so a
         # single fist only ARMS it; a second fist inside the confirm window
         # actually closes. One stray fist can no longer close anything.
