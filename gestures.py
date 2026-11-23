@@ -197,22 +197,20 @@ class HandStabilizer:
         leave = float(self.cfg.get("pinch_release_ratio", 0.50))
         confirm = max(1, int(self.cfg.get("pinch_confirm_frames", 2)))
         if self._pinch[key]:
-            if ratio > leave:
-                # the fingers actually separated: a real release, so the NEXT
-                # settled pinch may be treated as deliberate
+            if reach < 1.0:
+                # Curl wins even if the thumb separates in the same frame.
+                # Cancel without clicking or arming a later pinch.
                 self._pinch[key] = False
                 self._run[key] = 0
-                if settled:
-                    self._released_seen[key] = True
-            elif reach < 1.0:
-                # the finger folded into the palm (e.g. closing a fist): the
-                # pinch is CANCELLED, not released - no click, no re-arm
-                # (advisor review: curl-during-pinch re-arm and spurious click)
-                self._pinch[key] = False
-                self._run[key] = 0
+                self._released_seen[key] = False
                 curl_ended = True
-        elif ratio > leave and settled:
-            # openly released while settled: the next pinch is deliberate
+            elif ratio > leave:
+                self._pinch[key] = False
+                self._run[key] = 0
+                if settled and reach > 1.2:
+                    self._released_seen[key] = True
+        elif ratio > leave and settled and reach > 1.2:
+            # Only an extended, separated finger can arm a deliberate pinch.
             self._released_seen[key] = True
             self._run[key] = 0
         elif ratio < enter and reach > 1.2:
@@ -225,7 +223,6 @@ class HandStabilizer:
         else:
             self._run[key] = 0
         return self._pinch[key], curl_ended
-
     def update(self, raw: HandState, now: float) -> HandState:
         grace = float(self.cfg.get("lost_grace_sec", 0.15))
         if not raw.found:
