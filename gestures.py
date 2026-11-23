@@ -528,14 +528,17 @@ class Dispatcher:
 
     def release_all(self, force: bool = False) -> None:
         """Drop everything held or armed. `force=True` additionally tells the
-        sink to release every mouse button (use it on exit / error paths)."""
-        self._end_drag()
-        self._smooth = None
-        self._click_pos = None
-        self._fist_armed_until = 0.0
-        self.notice = ""
-        if force:
-            self.sink.release_all()
+        sink to release every mouse button (use it on exit / error paths).
+        A failing drag_end() must NOT keep the forced cleanup from running."""
+        try:
+            self._end_drag()
+        finally:
+            self._smooth = None
+            self._click_pos = None
+            self._fist_armed_until = 0.0
+            self.notice = ""
+            if force:
+                self.sink.release_all()
 
     def toggle_mode(self) -> str:
         self.release_all()  # never carry a held button or an armed close across modes

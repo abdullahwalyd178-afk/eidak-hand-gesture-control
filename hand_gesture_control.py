@@ -251,6 +251,12 @@ def run(cfg: dict) -> int:
             try:
                 dispatcher.handle(events, state)
             except pyautogui.FailSafeException:
+                # Never leave a held button or drag state behind on emergency stop;
+                # a cleanup failure must not block the stop itself.
+                try:
+                    dispatcher.release_all(force=True)
+                except Exception:
+                    pass
                 print("Emergency stop triggered (mouse in screen corner).")
                 break
 

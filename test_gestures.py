@@ -558,6 +558,96 @@ def test_mouse_release_survives_armed_failsafe():
     print("ok mouse-up is delivered even with the fail-safe armed")
 
 
+# --------------------------------------------------------------------------
+# Review-driven failure-path tests (fix/gesture-safety, independent review)
+# --------------------------------------------------------------------------
+def test_release_all_force_survives_drag_end_failure():
+    """If drag_end() raises, forced cleanup must still reach sink.release_all()."""
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg())
+    disp.handle([__import__("hand_gesture_control").GestureEvent("DRAG_START")],
+                __import__("hand_gesture_control").HandState(found=True))
+    def boom():
+        raise RuntimeError("mouse stuck")
+    sink.drag_end = boom
+    try:
+        disp.release_all(force=True)
+    except RuntimeError:
+        pass
+    assert ("release_all", ()) in sink.calls, sink.calls
+    print("ok forced cleanup survives a failing drag_end")
+
+
+def test_failsafe_exception_during_drag_releases_state():
+    """The run()-level contract: on FailSafeException the dispatcher is force-cleaned,
+    so no drag state or held button survives the emergency stop."""
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg())
+    disp.handle([__import__("hand_gesture_control").GestureEvent("DRAG_START")],
+                __import__("hand_gesture_control").HandState(found=True))
+    assert ("drag_start", ()) in sink.calls
+    disp.release_all(force=True)  # what the except-block now does
+    assert ("drag_end", ()) in sink.calls and ("release_all", ()) in sink.calls
+    assert not disp._drag_down
+    print("ok emergency stop leaves no drag state")
+
+
+def test_held_palm_does_not_retrigger_pause_toggle():
+    """Keeping the palm open after one PAUSE_TOGGLE must not toggle repeatedly."""
+    cfg_ = cfg(start_mode="media")
+    pipe, sink = GesturePipeline(cfg_), NullSink()
+    disp = Dispatcher(sink, cfg_)
+    palm = make_landmarks(**PALM_KW)
+    run_pipe(pipe, disp, settle(palm, 100.0, n=60))          # ~2 s: first toggle
+    assert disp.paused
+    run_pipe(pipe, disp, settle(palm, 102.0, n=60))          # still the same held palm
+    assert disp.paused, "a held palm must not toggle pause back and forth"
+    print("ok held palm fires PAUSE_TOGGLE only once")
+
+
+def test_hand_loss_during_pinch_makes_no_click():
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    frames = settle(pinch_at(0.2), 100.0, n=5)               # pinch starts
+    frames += [(100.2 + i * 0.033, None) for i in range(12)]  # hand vanishes mid-pinch
+    run_pipe(pipe, disp, frames)
+    assert not real_calls(sink), real_calls(sink)
+    print("ok hand loss mid-pinch = no phantom click")
+
+
+def test_dropout_expiry_does_not_restore_old_state():
+    """After lost_grace_sec expires, a returning hand restarts stabilization;
+    a stale pinch from before the loss must not complete as a click."""
+    pipe, sink = GesturePipeline(cfg()), NullSink()
+    disp = Dispatcher(sink, cfg())
+    run_pipe(pipe, disp, settle(pinch_at(0.2), 100.0, n=5))   # pinch in progress
+    run_pipe(pipe, disp, [(100.2 + i * 0.05, None) for i in range(10)])  # 0.5 s loss > grace
+    idle = make_landmarks(up=("index",))
+    run_pipe(pipe, disp, settle(idle, 101.0, n=20))           # hand back, fingers open
+    assert not real_calls(sink), real_calls(sink)
+    print("ok expired dropout starts a fresh cycle")
+
+
+def test_mouse_up_failure_restores_failsafe_flag():
+    import sys as _sys
+    mod = _sys.modules[PyAutoSink.__module__]
+    class _FailUp(_FakePyAutoGUI):
+        def mouseUp(self, button="left", _pause=False):
+            raise RuntimeError("os-level failure")
+    old = mod.pyautogui
+    mod.pyautogui = fake = _FailUp()
+    try:
+        sink = PyAutoSink()
+        try:
+            sink.drag_end()
+        except RuntimeError:
+            pass
+        assert fake.FAILSAFE is True, "fail-safe flag must be restored even when mouseUp raises"
+    finally:
+        mod.pyautogui = old
+    print("ok FAILSAFE restored after a failing mouseUp")
+
+
 if __name__ == "__main__":
     test_classify()
     test_move()
@@ -590,4 +680,10 @@ if __name__ == "__main__":
     test_old_saved_config_cannot_bring_back_the_swallowed_double_pinch()
     test_smoothing_resets_after_hand_loss()
     test_mouse_release_survives_armed_failsafe()
+    test_release_all_force_survives_drag_end_failure()
+    test_failsafe_exception_during_drag_releases_state()
+    test_held_palm_does_not_retrigger_pause_toggle()
+    test_hand_loss_during_pinch_makes_no_click()
+    test_dropout_expiry_does_not_restore_old_state()
+    test_mouse_up_failure_restores_failsafe_flag()
     print("ALL TESTS PASSED")
