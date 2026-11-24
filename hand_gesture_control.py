@@ -20,14 +20,9 @@ import argparse
 import json
 import logging
 import logging.handlers
-import math
 import os
-import platform
-import sys
 import time
-from collections import deque
-from dataclasses import dataclass, field, asdict
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 
@@ -138,6 +133,100 @@ DEFAULT_CONFIG = {
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
+# Sane ranges for numeric config keys (inclusive). A merged user value
+# outside its range is rejected by validate_config, not silently trusted.
+_CONFIG_RANGES = {
+    "camera_index": (-1, 16),
+    "freeze_reconnect_sec": (0.1, 120.0),
+    "frame_width": (160, 3840),
+    "frame_height": (120, 2160),
+    "max_num_hands": (1, 4),
+    "detection_confidence": (0.0, 1.0),
+    "tracking_confidence": (0.0, 1.0),
+    "smoothing": (0.0, 1.0),
+    "sensitivity": (0.1, 10.0),
+    "control_margin": (0.0, 1.0),
+    "click_debounce_sec": (0.0, 2.0),
+    "double_click_window_sec": (0.05, 3.0),
+    "drag_hold_sec": (0.0, 3.0),
+    "scroll_gain": (10, 10000),
+    "swipe_window_sec": (0.05, 3.0),
+    "swipe_min_travel": (0.01, 1.0),
+    "hold_trigger_sec": (0.05, 5.0),
+    "fist_hold_sec": (0.1, 5.0),
+    "fist_confirm_window_sec": (0.1, 30.0),
+    "gesture_cooldown_sec": (0.0, 5.0),
+    "pinch_ratio": (0.0, 1.0),
+    "camera_reconnect_max_sec": (1, 300),
+    "low_light_threshold": (0, 255),
+    "edge_margin_px": (0, 100),
+    "stab_window_frames": (1, 30),
+    "pinch_release_ratio": (0.0, 1.0),
+    "pinch_confirm_frames": (1, 10),
+    "settle_sec": (0.0, 3.0),
+    "lost_grace_sec": (0.0, 3.0),
+    "pause_hold_sec": (0.1, 10.0),
+}
+
+# Keys whose values must be whole numbers (a float is accepted only when it
+# is integral, e.g. 640.0 from a hand-edited JSON file).
+_CONFIG_INT_KEYS = {
+    "camera_index", "frame_width", "frame_height", "max_num_hands",
+    "low_light_threshold", "edge_margin_px", "stab_window_frames",
+    "pinch_confirm_frames",
+}
+
+_CONFIG_CHOICES = {
+    "start_mode": ("mouse", "media"),
+}
+
+
+def _valid_config_value(key: str, value) -> bool:
+    """True when `value` is a sane value for the known config `key`."""
+    default = DEFAULT_CONFIG[key]
+    if key == "last_camera":
+        if value is None:
+            return True
+        return (isinstance(value, dict)
+                and isinstance(value.get("index"), int)
+                and not isinstance(value.get("index"), bool)
+                and value.get("index", -1) >= 0
+                and isinstance(value.get("backend"), int)
+                and not isinstance(value.get("backend"), bool))
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if key in _CONFIG_RANGES:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        if key in _CONFIG_INT_KEYS and isinstance(value, float) and not value.is_integer():
+            return False
+        low, high = _CONFIG_RANGES[key]
+        return low <= value <= high
+    if isinstance(default, str):
+        if not isinstance(value, str):
+            return False
+        choices = _CONFIG_CHOICES.get(key)
+        return choices is None or value in choices
+    if isinstance(default, list):
+        return isinstance(value, list) and all(isinstance(v, str) for v in value)
+    return True
+
+
+def validate_config(cfg: dict) -> dict:
+    """Return `cfg` with every invalid known-key value replaced by its
+    default (with a warning naming the key). Unknown keys are left alone,
+    and valid values are kept exactly as given."""
+    cfg = dict(cfg)
+    for key, default in DEFAULT_CONFIG.items():
+        if key not in cfg:
+            cfg[key] = default
+            continue
+        if not _valid_config_value(key, cfg[key]):
+            print(f"[config] invalid value for '{key}' ({cfg[key]!r}); "
+                  f"using default {default!r}")
+            cfg[key] = default
+    return cfg
+
 
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
@@ -149,7 +238,7 @@ def load_config() -> dict:
                 cfg.update(user_cfg)
     except Exception as exc:  # corrupt config should never kill the app
         print(f"[config] could not read config.json ({exc}); using defaults")
-    return cfg
+    return validate_config(cfg)
 
 
 def save_config(cfg: dict) -> None:
@@ -323,7 +412,7 @@ def run(cfg: dict) -> int:
                 break
             try:
                 ok, frame, status = camera.read()
-            except Exception as exc:
+            except Exception:
                 frame_errors += 1
                 log.exception("camera read error #%d", frame_errors)
                 if frame_errors >= 30:
@@ -391,7 +480,7 @@ def run(cfg: dict) -> int:
             except pyautogui.FailSafeException:
                 _emergency_stop("Emergency stop triggered (mouse in screen corner).")
                 break
-            except Exception as exc:
+            except Exception:
                 frame_errors += 1
                 log.exception("frame processing error #%d", frame_errors)
                 if frame_errors >= 30:

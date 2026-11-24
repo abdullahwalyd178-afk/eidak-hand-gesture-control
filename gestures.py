@@ -123,7 +123,8 @@ def classify_hand(lm: Landmarks, pinch_ratio: float = 0.35) -> HandState:
 
     # A pinch is thumb tip touching the finger tip while that finger is
     # extended away from the wrist (a folded fist must NOT read as a pinch).
-    extended_out = lambda tip: dist(lm[tip], lm[WRIST]) > hand_size * 1.2
+    def extended_out(tip):
+        return dist(lm[tip], lm[WRIST]) > hand_size * 1.2
     pinch_index = dist(lm[THUMB_TIP], lm[INDEX_TIP]) < hand_size * pinch_ratio and extended_out(INDEX_TIP)
     pinch_middle = dist(lm[THUMB_TIP], lm[MIDDLE_TIP]) < hand_size * pinch_ratio and extended_out(MIDDLE_TIP)
     pinch_index_ratio = dist(lm[THUMB_TIP], lm[INDEX_TIP]) / hand_size
