@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eidak"
+version = "1.0.0"
+description = "Control your PC with hand gestures through the webcam: mouse, clicks, scroll + video player controls. Local and offline."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9,<3.13"
+dependencies = [
+    "mediapipe==0.10.14",
+    "numpy>=1.23.0,<3",
+    "opencv-contrib-python>=4.8,<4.11",
+    "pyautogui>=0.9.54",
+]
+
+[project.urls]
+Repository = "https://github.com/abdullahwalyd178-afk/eidak-hand-gesture-control"
+
+[tool.setuptools]
+py-modules = ["hand_gesture_control", "gestures", "camera"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# Start conservative: pyflakes + a small set of pycode-style rules.
+# Bugbear / complexity rules can be enabled later, file by file.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# hand_gesture_control.py intentionally re-exports the camera/gestures
+# symbols (module split, step 0) so existing imports — including the test
+# suites — keep working. Those imports are a public surface, not dead code.
+"hand_gesture_control.py" = ["F401"]

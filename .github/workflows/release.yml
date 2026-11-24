@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and draft a release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Run tests (headless)
+        run: |
+          python test_gestures.py
+          python test_camera.py
+          python test_config.py
+
+      - name: Build the Windows executable
+        run: pyinstaller --onefile --name Eidak hand_gesture_control.py
+
+      # The release is created as a DRAFT: a maintainer must test the exe on
+      # a real Windows PC with a real camera, then press "Publish release".
+      - name: Create draft release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/Eidak.exe
+            UserGuide-AR.pdf
+            UserGuide-EN.pdf

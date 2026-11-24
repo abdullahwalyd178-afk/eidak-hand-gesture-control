@@ -60,8 +60,12 @@ def test_backends_no_cap_any_on_windows():
 
 
 def test_probe_plan_last_camera_first():
+    backends = cam.CameraManager(dict(hgc.DEFAULT_CONFIG))._backends()
+    if not backends:
+        print("  skip probe-plan last-camera test (no cv2 / no camera backends)")
+        return
     cfg = dict(hgc.DEFAULT_CONFIG)
-    cfg["last_camera"] = {"index": 2, "backend": cam.CameraManager(cfg)._backends()[0][0]}
+    cfg["last_camera"] = {"index": 2, "backend": backends[0][0]}
     m = cam.CameraManager(cfg)
     plan = m._probe_plan()
     check("last working camera probed first",
@@ -71,6 +75,9 @@ def test_probe_plan_last_camera_first():
 
 
 def test_probe_plan_strict():
+    if not cam.CameraManager(dict(hgc.DEFAULT_CONFIG))._backends():
+        print("  skip probe-plan strict test (no cv2 / no camera backends)")
+        return
     cfg = dict(hgc.DEFAULT_CONFIG)
     cfg["camera_index"] = 1
     cfg["camera_strict"] = True

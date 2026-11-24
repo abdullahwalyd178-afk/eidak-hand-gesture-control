@@ -1,5 +1,10 @@
 # Eidak | إيدك — Hand Gesture PC Control
 
+[![Tests](https://github.com/abdullahwalyd178-afk/eidak-hand-gesture-control/actions/workflows/tests.yml/badge.svg)](https://github.com/abdullahwalyd178-afk/eidak-hand-gesture-control/actions/workflows/tests.yml)
+[![Latest release](https://img.shields.io/github/v/release/abdullahwalyd178-afk/eidak-hand-gesture-control)](https://github.com/abdullahwalyd178-afk/eidak-hand-gesture-control/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.9%E2%80%933.12-blue.svg)](https://www.python.org/)
+
 Control your computer with your hand through the webcam: move the mouse,
 click, drag, scroll — plus a dedicated mode for video players
 (play/pause, seek, volume, speed, fullscreen, close).
