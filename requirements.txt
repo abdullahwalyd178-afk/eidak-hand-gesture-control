@@ -1,4 +1,4 @@
-mediapipe==0.10.14  # hand tracking; supports Python 3.9 - 3.12 only
+mediapipe==1.2.3  # hand tracking; supports Python 3.9 - 3.12 only
 numpy>=1.23.0,<3
 opencv-contrib-python>=4.8,<4.11  # pinned explicitly: mediapipe pulls it transitively
 pyautogui>=0.9.54
