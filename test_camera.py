@@ -253,7 +253,7 @@ def test_successful_reopen_swaps_handle():
     try:
         for _ in range(15):
             m.read()
-        ok, frame, status = m.read()
+        m.read()
         check("old handle released on failure path", released["old"] is True)
         check("new handle installed", isinstance(m.cap, GoodCap))
         check("backoff reset after success", m._reconnect_delay == 1.0)
