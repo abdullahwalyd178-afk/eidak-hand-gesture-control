@@ -88,31 +88,49 @@ def test_probe_plan_strict():
 
 
 def test_save_config_diff_only(tmp_path=None):
-    path = hgc.CONFIG_PATH
-    try:
-        import tempfile
-        hgc.CONFIG_PATH = os.path.join(tempfile.gettempdir(), "eidak-test-config.json")
-        cfg = dict(hgc.DEFAULT_CONFIG)
-        cfg["sensitivity"] = 2.0
-        cfg["last_camera"] = {"index": 1, "backend": 700}
-        hgc.save_config(cfg)
-        with open(hgc.CONFIG_PATH, "r", encoding="utf-8") as fh:
-            saved = json.load(fh)
-        check("changed keys saved",
-              saved.get("sensitivity") == 2.0 and saved.get("last_camera", {}).get("index") == 1)
-        check("default keys not saved", "frame_width" not in saved and "pinch_ratio" not in saved)
-        # round-trip: loading the diff over defaults reproduces the values
-        cfg2 = hgc.load_config()
-        check("round-trip sensitivity", cfg2["sensitivity"] == 2.0)
-        check("round-trip defaults intact", cfg2["frame_width"] == hgc.DEFAULT_CONFIG["frame_width"])
-        # empty diff removes nothing but writes {} when a file exists
-        hgc.save_config(dict(hgc.DEFAULT_CONFIG))
-        with open(hgc.CONFIG_PATH, "r", encoding="utf-8") as fh:
-            check("all-default saves empty diff", json.load(fh) == {})
-    finally:
-        hgc.CONFIG_PATH = path
-        if os.path.exists(hgc.CONFIG_PATH):
-            os.remove(hgc.CONFIG_PATH)
+    original_config_path = hgc.CONFIG_PATH
+    import tempfile
+
+    # Keep every test write inside its own temporary directory. Never touch or
+    # delete the user's real config.json, even when this suite runs locally.
+    with tempfile.TemporaryDirectory(prefix="eidak-config-test-") as tmpdir:
+        try:
+            hgc.CONFIG_PATH = os.path.join(tmpdir, "config.json")
+            cfg = dict(hgc.DEFAULT_CONFIG)
+            cfg["sensitivity"] = 2.0
+            cfg["last_camera"] = {"index": 1, "backend": 700}
+            hgc.save_config(cfg)
+            with open(hgc.CONFIG_PATH, "r", encoding="utf-8") as fh:
+                saved = json.load(fh)
+            check("changed keys saved",
+                  saved.get("sensitivity") == 2.0 and saved.get("last_camera", {}).get("index") == 1)
+            check("default keys not saved", "frame_width" not in saved and "pinch_ratio" not in saved)
+            cfg2 = hgc.load_config()
+            check("round-trip sensitivity", cfg2["sensitivity"] == 2.0)
+            check("round-trip defaults intact", cfg2["frame_width"] == hgc.DEFAULT_CONFIG["frame_width"])
+            hgc.save_config(dict(hgc.DEFAULT_CONFIG))
+            with open(hgc.CONFIG_PATH, "r", encoding="utf-8") as fh:
+                check("all-default saves empty diff", json.load(fh) == {})
+        finally:
+            hgc.CONFIG_PATH = original_config_path
+
+
+
+def test_config_test_preserves_existing_config():
+    import tempfile
+
+    original_config_path = hgc.CONFIG_PATH
+    with tempfile.TemporaryDirectory(prefix="eidak-preserve-test-") as tmpdir:
+        sentinel = os.path.join(tmpdir, "real-config.json")
+        with open(sentinel, "w", encoding="utf-8") as fh:
+            fh.write('{"user_setting": "keep-me"}')
+        hgc.CONFIG_PATH = sentinel
+        try:
+            test_save_config_diff_only()
+        finally:
+            hgc.CONFIG_PATH = original_config_path
+        with open(sentinel, "r", encoding="utf-8") as fh:
+            check("existing config survives config test", json.load(fh) == {"user_setting": "keep-me"})
 
 
 def test_freeze_detection():
@@ -157,17 +175,6 @@ def test_freeze_detection():
     for _ in range(5):
         ok4, _, _ = m2.read()
     check("changing frames never freeze", ok4 is True)
-
-
-def main():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-    print(f"{len(tests)} camera tests passed")
-
-
-if __name__ == "__main__":
-    main()
 
 
 def test_failed_reopen_releases_old_handle():
@@ -246,7 +253,7 @@ def test_successful_reopen_swaps_handle():
     try:
         for _ in range(15):
             m.read()
-        ok, frame, status = m.read()
+        m.read()
         check("old handle released on failure path", released["old"] is True)
         check("new handle installed", isinstance(m.cap, GoodCap))
         check("backoff reset after success", m._reconnect_delay == 1.0)
@@ -255,3 +262,16 @@ def test_successful_reopen_swaps_handle():
         check("reads resume after reconnect", ok2 is True and frame2 is not None)
     finally:
         cam.cv2.VideoCapture = orig
+
+
+def main():
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+    print(f"{len(tests)} camera tests passed")
+
+
+if __name__ == "__main__":
+    main()
+
+
