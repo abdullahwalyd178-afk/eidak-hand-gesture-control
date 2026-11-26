@@ -13,6 +13,13 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
+        exclude:
+          # GitHub's current ubuntu-latest image no longer ships a Python 3.9 build.
+          - os: ubuntu-latest
+            python-version: "3.9"
+        include:
+          - os: ubuntu-22.04
+            python-version: "3.9"
 
     steps:
       - name: Check out the repository
