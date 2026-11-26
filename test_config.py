@@ -40,6 +40,9 @@ def test_wrong_type_falls_back():
     out = validated(media_window_allowlist=["vlc", 3])
     check("allowlist with non-string falls back",
           out["media_window_allowlist"] == hgc.DEFAULT_CONFIG["media_window_allowlist"])
+    out = validated(media_window_allowlist=[""])
+    check("blank allowlist token falls back",
+          out["media_window_allowlist"] == hgc.DEFAULT_CONFIG["media_window_allowlist"])
     out = validated(last_camera={"index": "front", "backend": 700})
     check("last_camera with string index falls back", out["last_camera"] is None)
 
@@ -54,6 +57,9 @@ def test_out_of_range_falls_back():
           out["detection_confidence"] == hgc.DEFAULT_CONFIG["detection_confidence"])
     out = validated(frame_width=10)
     check("tiny frame_width falls back", out["frame_width"] == hgc.DEFAULT_CONFIG["frame_width"])
+    out = validated(control_margin=0.75)
+    check("degenerate control margin falls back",
+          out["control_margin"] == hgc.DEFAULT_CONFIG["control_margin"])
     out = validated(start_mode="cinema")
     check("unknown start_mode falls back", out["start_mode"] == hgc.DEFAULT_CONFIG["start_mode"])
 
@@ -69,6 +75,8 @@ def test_valid_custom_values_kept():
     check("valid frame_width kept", out["frame_width"] == 1280)
     check("valid allowlist kept", out["media_window_allowlist"] == ["vlc"])
     check("valid last_camera kept", out["last_camera"] == {"index": 1, "backend": 700})
+    out = validated(media_window_allowlist=[])
+    check("empty allowlist remains explicit opt-out", out["media_window_allowlist"] == [])
     out = validated()
     check("all defaults pass validation untouched", out == hgc.DEFAULT_CONFIG)
 
@@ -105,12 +113,44 @@ def test_load_config_files(tmpdir):
             os.remove(tmp)
 
 
+def test_cli_rejects_invalid_overrides():
+    original_path = hgc.CONFIG_PATH
+    original_run = hgc.run
+    calls = []
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hgc.CONFIG_PATH = os.path.join(tmpdir, "config.json")
+            hgc.run = lambda cfg: calls.append(dict(cfg)) or 0
+            invalid = [
+                (["--camera", "-1"], "negative camera index rejected"),
+                (["--camera", "17"], "camera index above range rejected"),
+                (["--sensitivity", "0"], "zero sensitivity rejected"),
+                (["--sensitivity", "11"], "excessive sensitivity rejected"),
+                (["--sensitivity", "nan"], "NaN sensitivity rejected"),
+            ]
+            for argv, label in invalid:
+                try:
+                    hgc.main(argv)
+                except SystemExit as exc:
+                    check(label, exc.code == 2)
+                else:
+                    raise AssertionError(label)
+            hgc.main(["--camera", "2", "--sensitivity", "2.0"])
+            check("valid CLI overrides reach run",
+                  calls[-1]["camera_index"] == 2 and calls[-1]["camera_strict"]
+                  and calls[-1]["sensitivity"] == 2.0)
+    finally:
+        hgc.CONFIG_PATH = original_path
+        hgc.run = original_run
+
+
 def main():
     test_wrong_type_falls_back()
     test_out_of_range_falls_back()
     test_valid_custom_values_kept()
     with tempfile.TemporaryDirectory() as tmpdir:
         test_load_config_files(tmpdir)
+    test_cli_rejects_invalid_overrides()
     print("ALL TESTS PASSED")
 
 
