@@ -104,13 +104,16 @@ class CameraManager:
         """(index, backend, name) attempts, best-known first (item 10)."""
         backends = self._backends()
         plan: List[Tuple[int, int, str]] = []
+        strict = bool(self.cfg.get("camera_strict")) and isinstance(self.cfg.get("camera_index"), int) \
+            and self.cfg.get("camera_index", -1) >= 0
         last = self.cfg.get("last_camera") or {}
         li, lb = last.get("index"), last.get("backend")
         name_of = {b: n for b, n in backends}
-        if isinstance(li, int) and isinstance(lb, int) and lb in name_of:
+        # A remembered camera is only a hint in auto mode. In strict mode
+        # (--camera), never probe a different index before the requested one.
+        if (isinstance(li, int) and isinstance(lb, int) and lb in name_of
+                and (not strict or li == self.cfg.get("camera_index"))):
             plan.append((li, lb, name_of[lb] + " (last working)"))
-        strict = bool(self.cfg.get("camera_strict")) and isinstance(self.cfg.get("camera_index"), int) \
-            and self.cfg.get("camera_index", -1) >= 0
         indices = [self.cfg["camera_index"]] if strict else self._indices()
         for index in indices:
             for backend, name in backends:
@@ -377,7 +380,11 @@ def diagnose_cameras(cfg: dict) -> int:
                 if verdict == OK:
                     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    kind = "grayscale/IR?" if frame is not None and looks_grayscale(frame) else "color"
+                    is_gray = frame is not None and looks_grayscale(frame)
+                    if is_gray and cfg.get("skip_grayscale_cameras", True):
+                        out(f"camera {index} via {name:<16} : grayscale/IR ({w}x{h}) - skipped by app")
+                        continue
+                    kind = "grayscale/IR" if is_gray else "color"
                     out(f"camera {index} via {name:<16} : WORKING ({w}x{h}, {kind})")
                     found_any = True
                 elif verdict == OPENED_NO_FRAMES:
