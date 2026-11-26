@@ -706,10 +706,15 @@ class Dispatcher:
         API failure), stay permissive rather than breaking the feature."""
         title = active_window_title()
         self.active_window = title
-        if not title:
-            return True
         allow = self.cfg.get("media_window_allowlist") or []
         if not allow:
+            return True
+        if not title:
+            # On Windows, an unknown foreground window must not receive
+            # Space or Ctrl+W. Non-Windows keeps the legacy permissive path.
+            if os.name == "nt":
+                self.notice = "MEDIA KEYS OFF - cannot identify focused window"
+                return False
             return True
         low = title.lower()
         return any(str(tok).lower() in low for tok in allow)
