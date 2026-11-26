@@ -853,7 +853,7 @@ def main():
     tests = [(name, fn) for name, fn in sorted(globals().items())
              if name.startswith("test_") and callable(fn)]
     with patch("gestures.active_window_title", return_value="VLC media player"):
-        for name, test in tests:
+        for _, test in tests:
             test()
     print(f"ALL {len(tests)} TESTS PASSED")
 
