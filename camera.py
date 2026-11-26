@@ -104,13 +104,16 @@ class CameraManager:
         """(index, backend, name) attempts, best-known first (item 10)."""
         backends = self._backends()
         plan: List[Tuple[int, int, str]] = []
+        strict = bool(self.cfg.get("camera_strict")) and isinstance(self.cfg.get("camera_index"), int) \
+            and self.cfg.get("camera_index", -1) >= 0
         last = self.cfg.get("last_camera") or {}
         li, lb = last.get("index"), last.get("backend")
         name_of = {b: n for b, n in backends}
-        if isinstance(li, int) and isinstance(lb, int) and lb in name_of:
+        # A remembered camera is only a hint in auto mode. In strict mode
+        # (--camera), never probe a different index before the requested one.
+        if (isinstance(li, int) and isinstance(lb, int) and lb in name_of
+                and (not strict or li == self.cfg.get("camera_index"))):
             plan.append((li, lb, name_of[lb] + " (last working)"))
-        strict = bool(self.cfg.get("camera_strict")) and isinstance(self.cfg.get("camera_index"), int) \
-            and self.cfg.get("camera_index", -1) >= 0
         indices = [self.cfg["camera_index"]] if strict else self._indices()
         for index in indices:
             for backend, name in backends:
