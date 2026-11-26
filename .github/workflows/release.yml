@@ -40,7 +40,7 @@ jobs:
       # The release is created as a DRAFT: a maintainer must test the exe on
       # a real Windows PC with a real camera, then press "Publish release".
       - name: Create draft release with artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true
