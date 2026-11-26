@@ -73,6 +73,11 @@ jobs:
         run: |
           if (!(Test-Path "dist/Eidak.exe")) { throw "PyInstaller did not create dist/Eidak.exe" }
 
+      - name: Smoke test packaged executable
+        run: |
+          & ".\\dist\\Eidak.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "Packaged executable failed its --help smoke test" }
+
   lint:
     name: Ruff lint
     runs-on: ubuntu-latest
