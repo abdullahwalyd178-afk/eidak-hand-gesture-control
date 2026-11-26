@@ -717,14 +717,16 @@ class Dispatcher:
                 return False
             return True
         low = title.lower()
-        return any(str(tok).lower() in low for tok in allow)
+        if not any(str(tok).lower() in low for tok in allow):
+            self.notice = "MEDIA KEYS OFF - focus a player window"
+            return False
+        return True
 
     def _handle_media(self, ev: GestureEvent, state: HandState) -> None:
         if self._paused:
             return
         if not self._media_target_ok():
-            self.notice = "MEDIA KEYS OFF - focus a player window"
-            return
+            return  # _media_target_ok sets the reason-specific HUD notice
         # Closing is destructive (Ctrl+W hits whatever window has focus), so a
         # single fist only ARMS it; a second fist inside the confirm window
         # actually closes. One stray fist can no longer close anything.
