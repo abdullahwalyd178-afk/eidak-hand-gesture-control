@@ -709,51 +709,6 @@ def test_second_click_position_comes_from_click_frame():
     print("ok second click uses the click frame's own position")
 
 
-if __name__ == "__main__":
-    test_classify()
-    test_move()
-    test_click_and_double()
-    test_right_click()
-    test_drag()
-    test_scroll()
-    test_swipe()
-    test_holds()
-    test_dispatcher_mouse()
-    test_dispatcher_media_and_pause()
-    test_mapping_bounds()
-    test_never_hits_failsafe_corners()
-    test_single_fist_never_closes()
-    test_continuous_fist_never_confirms()
-    test_no_scroll_during_right_click_pose()
-    test_drag_is_released_when_hand_is_lost()
-    test_drag_is_released_on_mode_switch_and_pause()
-    test_drag_end_event_passes_in_media_mode()
-    test_pause_is_honoured_in_media_mode()
-    test_long_palm_toggles_pause_in_media_mode()
-    test_single_frame_pinch_glitch_is_not_a_click()
-    test_real_pinch_still_clicks_once()
-    test_pinch_hysteresis_wobble_gives_one_click()
-    test_hold_survives_one_bad_frame()
-    test_short_dropout_does_not_restart_everything()
-    test_hand_entering_fast_is_not_a_swipe()
-    test_deliberate_swipe_after_settling_still_works()
-    test_double_pinch_is_one_double_click_not_three_clicks()
-    test_old_saved_config_cannot_bring_back_the_swallowed_double_pinch()
-    test_smoothing_resets_after_hand_loss()
-    test_mouse_release_survives_armed_failsafe()
-    test_release_all_force_survives_drag_end_failure()
-    test_failsafe_exception_during_drag_releases_state()
-    test_held_palm_does_not_retrigger_pause_toggle()
-    test_hand_loss_during_pinch_makes_no_click()
-    test_dropout_expiry_does_not_restore_old_state()
-    test_mouse_up_failure_restores_failsafe_flag()
-    test_hand_entering_already_pinched_never_clicks()
-    test_release_then_new_pinch_after_pinched_entry_clicks_once()
-    test_grace_replay_fires_no_new_gestures()
-    test_second_click_position_comes_from_click_frame()
-    print("ALL TESTS PASSED")
-
-
 def test_curl_during_pinch_does_not_rearm():
     """Folding the pinched finger into the palm ends the pinch but is NOT an
     open release: it must not re-arm the click. Only a real open hand does."""
@@ -888,3 +843,16 @@ def test_simultaneous_curl_and_separation_emits_no_click():
     run_pipe(pipe, disp, [(100.8 + i * 0.033, curl) for i in range(5)])
     run_pipe(pipe, disp, [(101.1 + i * 0.033, pinch) for i in range(5)])
     assert not real_calls(sink), real_calls(sink)
+
+def main():
+    # Discover every regression test so tests added below this runner are
+    # executed too; keep the runner at the end of the module.
+    tests = [(name, fn) for name, fn in sorted(globals().items())
+             if name.startswith("test_") and callable(fn)]
+    for name, test in tests:
+        test()
+    print(f"ALL {len(tests)} TESTS PASSED")
+
+
+if __name__ == "__main__":
+    main()
