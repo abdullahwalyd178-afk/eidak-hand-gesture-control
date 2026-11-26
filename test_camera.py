@@ -264,6 +264,69 @@ def test_successful_reopen_swaps_handle():
         cam.cv2.VideoCapture = orig
 
 
+def test_probe_plan_strict_ignores_different_last_camera():
+    backends = cam.CameraManager(dict(hgc.DEFAULT_CONFIG))._backends()
+    if not backends:
+        print("  skip strict last-camera test (no cv2 / no camera backends)")
+        return
+    cfg = dict(hgc.DEFAULT_CONFIG)
+    cfg["camera_index"] = 1
+    cfg["camera_strict"] = True
+    cfg["last_camera"] = {"index": 2, "backend": backends[0][0]}
+    plan = cam.CameraManager(cfg)._probe_plan()
+    check("strict mode never probes remembered different camera",
+          bool(plan) and all(index == 1 for index, _, _ in plan))
+
+
+def test_diagnostics_reports_grayscale_camera_as_skipped():
+    import contextlib
+    import io
+
+    if cam.cv2 is None:
+        print("  skip grayscale diagnostics test (OpenCV unavailable)")
+        return
+
+    class FakeCap:
+        def isOpened(self):
+            return True
+
+        def read(self):
+            return True, hgc.np.full((40, 40), 100, dtype=hgc.np.uint8)
+
+        def get(self, prop):
+            if prop == cam.cv2.CAP_PROP_FRAME_WIDTH:
+                return 40
+            if prop == cam.cv2.CAP_PROP_FRAME_HEIGHT:
+                return 40
+            return 0
+
+        def release(self):
+            pass
+
+    original_indices = cam.CameraManager._indices
+    original_backends = cam.CameraManager._backends
+    original_capture = cam.cv2.VideoCapture
+    original_report = cam._write_report
+    try:
+        cam.CameraManager._indices = lambda self: [0]
+        cam.CameraManager._backends = lambda self: [(700, "Fake")]
+        cam.cv2.VideoCapture = lambda index, backend: FakeCap()
+        cam._write_report = lambda lines: None
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = cam.diagnose_cameras(dict(hgc.DEFAULT_CONFIG))
+        text = output.getvalue()
+        check("grayscale-only camera is reported as skipped",
+              "grayscale/IR" in text and "skipped by app" in text)
+        check("diagnostics does not claim skipped camera works",
+              result == 1 and "At least one camera works" not in text)
+    finally:
+        cam.CameraManager._indices = original_indices
+        cam.CameraManager._backends = original_backends
+        cam.cv2.VideoCapture = original_capture
+        cam._write_report = original_report
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

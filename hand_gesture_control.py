@@ -145,7 +145,7 @@ _CONFIG_RANGES = {
     "tracking_confidence": (0.0, 1.0),
     "smoothing": (0.0, 1.0),
     "sensitivity": (0.1, 10.0),
-    "control_margin": (0.0, 1.0),
+    "control_margin": (0.0, 0.49),
     "click_debounce_sec": (0.0, 2.0),
     "double_click_window_sec": (0.05, 3.0),
     "drag_hold_sec": (0.0, 3.0),
@@ -208,7 +208,7 @@ def _valid_config_value(key: str, value) -> bool:
         choices = _CONFIG_CHOICES.get(key)
         return choices is None or value in choices
     if isinstance(default, list):
-        return isinstance(value, list) and all(isinstance(v, str) for v in value)
+        return isinstance(value, list) and all(isinstance(v, str) and bool(v.strip()) for v in value)
     return True
 
 
@@ -360,22 +360,42 @@ def run(cfg: dict) -> int:
         return 1
     print(f"Camera {camera.active_index} via {camera.backend_name} is running.")
 
-    sink = PyAutoSink()
-    pipeline = GesturePipeline(cfg)
-    dispatcher = Dispatcher(sink, cfg)
-
-    hands = mp.solutions.hands.Hands(
-        static_image_mode=False,
-        max_num_hands=int(cfg["max_num_hands"]),
-        min_detection_confidence=float(cfg["detection_confidence"]),
-        min_tracking_confidence=float(cfg["tracking_confidence"]),
-        model_complexity=0,  # lighter model: roughly halves CPU per frame (item 15)
-    )
-    drawing = mp.solutions.drawing_utils
-    styles = mp.solutions.drawing_styles
-
-    window = "Eidak - Hand Gesture PC Control"
-    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    # Camera is already open. Guard every later initialization so a failure
+    # (PyAutoGUI screen lookup, MediaPipe model creation, or window creation)
+    # cannot leave the camera handle locked until the process exits.
+    hands = None
+    try:
+        sink = PyAutoSink()
+        pipeline = GesturePipeline(cfg)
+        dispatcher = Dispatcher(sink, cfg)
+        hands = mp.solutions.hands.Hands(
+            static_image_mode=False,
+            max_num_hands=int(cfg["max_num_hands"]),
+            min_detection_confidence=float(cfg["detection_confidence"]),
+            min_tracking_confidence=float(cfg["tracking_confidence"]),
+            model_complexity=0,  # lighter model: roughly halves CPU per frame (item 15)
+        )
+        drawing = mp.solutions.drawing_utils
+        styles = mp.solutions.drawing_styles
+        window = "Eidak - Hand Gesture PC Control"
+        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    except Exception as exc:
+        log.exception("startup initialization failed")
+        print(f"Could not initialize Eidak: {exc}")
+        if hands is not None:
+            try:
+                hands.close()
+            except Exception:
+                log.exception("failed to close MediaPipe during startup cleanup")
+        try:
+            camera.release()
+        except Exception:
+            log.exception("failed to release camera during startup cleanup")
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            log.exception("failed to destroy OpenCV windows during startup cleanup")
+        return 1
 
     hotkey_registered = False
     if keyboard is not None:
@@ -533,9 +553,21 @@ def run(cfg: dict) -> int:
         except Exception:
             pass
         save_config(cfg)
-        hands.close()
-        camera.release()
-        cv2.destroyAllWindows()
+        # Cleanup each resource independently: one failing close must not
+        # prevent the camera or OpenCV windows from being released.
+        if hands is not None:
+            try:
+                hands.close()
+            except Exception:
+                log.exception("failed to close MediaPipe")
+        try:
+            camera.release()
+        except Exception:
+            log.exception("failed to release camera")
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            log.exception("failed to destroy OpenCV windows")
         log.info("run stopped")
     print("Stopped.")
     return 0
@@ -554,7 +586,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--mode", choices=["mouse", "media"], help="starting mode")
     parser.add_argument("--camera", type=int, help="force a camera index (strict: no fallback)")
     parser.add_argument("--list-cameras", action="store_true", help="list detected cameras and exit")
-    parser.add_argument("--sensitivity", type=float, help="cursor sensitivity 0.4 - 3.0")
+    parser.add_argument("--sensitivity", type=float, help="cursor sensitivity 0.1 - 10.0")
     parser.add_argument("--diagnose", action="store_true", help="camera diagnostics and exit")
     args = parser.parse_args(argv)
 
@@ -562,9 +594,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.mode:
         cfg["start_mode"] = args.mode
     if args.camera is not None:
+        if not 0 <= args.camera <= 16:
+            parser.error("--camera must be between 0 and 16")
         cfg["camera_index"] = args.camera
         cfg["camera_strict"] = True  # --camera means THIS camera, not a hint (item 12)
-    if args.sensitivity:
+    if args.sensitivity is not None:
+        if not 0.1 <= args.sensitivity <= 10.0:
+            parser.error("--sensitivity must be between 0.1 and 10.0")
         cfg["sensitivity"] = args.sensitivity
 
     if args.list_cameras:

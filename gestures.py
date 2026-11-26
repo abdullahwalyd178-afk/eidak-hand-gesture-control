@@ -702,24 +702,31 @@ class Dispatcher:
         """Media keys go to WHATEVER window has focus - a space lands as a
         typed space in any editor, Ctrl+W closes any tab (advisor review
         item). On Windows, only fire them when a known player window is
-        focused; if the foreground window cannot be determined (non-Windows,
-        API failure), stay permissive rather than breaking the feature."""
+        focused; an unknown foreground title fails closed. Non-Windows keeps
+        the permissive behavior because the Windows focus API is unavailable."""
         title = active_window_title()
         self.active_window = title
-        if not title:
-            return True
         allow = self.cfg.get("media_window_allowlist") or []
         if not allow:
             return True
+        if not title:
+            # On Windows, an unknown foreground window must not receive
+            # Space or Ctrl+W. Non-Windows keeps the legacy permissive path.
+            if os.name == "nt":
+                self.notice = "MEDIA KEYS OFF - cannot identify focused window"
+                return False
+            return True
         low = title.lower()
-        return any(str(tok).lower() in low for tok in allow)
+        if not any(str(tok).strip().lower() in low for tok in allow if str(tok).strip()):
+            self.notice = "MEDIA KEYS OFF - focus a player window"
+            return False
+        return True
 
     def _handle_media(self, ev: GestureEvent, state: HandState) -> None:
         if self._paused:
             return
         if not self._media_target_ok():
-            self.notice = "MEDIA KEYS OFF - focus a player window"
-            return
+            return  # _media_target_ok sets the reason-specific HUD notice
         # Closing is destructive (Ctrl+W hits whatever window has focus), so a
         # single fist only ARMS it; a second fist inside the confirm window
         # actually closes. One stray fist can no longer close anything.
