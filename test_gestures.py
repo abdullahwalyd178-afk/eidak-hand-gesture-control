@@ -845,12 +845,16 @@ def test_simultaneous_curl_and_separation_emits_no_click():
     assert not real_calls(sink), real_calls(sink)
 
 def main():
-    # Discover every regression test so tests added below this runner are
-    # executed too; keep the runner at the end of the module.
+    from unittest.mock import patch
+
+    # CI runners may have an arbitrary foreground window. Give media-mode
+    # unit tests a deterministic allowlisted player, while the dedicated
+    # safety test overrides this with an editor title and verifies blocking.
     tests = [(name, fn) for name, fn in sorted(globals().items())
              if name.startswith("test_") and callable(fn)]
-    for name, test in tests:
-        test()
+    with patch("gestures.active_window_title", return_value="VLC media player"):
+        for name, test in tests:
+            test()
     print(f"ALL {len(tests)} TESTS PASSED")
 
 
