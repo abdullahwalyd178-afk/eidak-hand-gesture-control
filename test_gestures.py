@@ -9,6 +9,7 @@ Run:  python test_gestures.py
 """
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -189,7 +190,8 @@ def test_dispatcher_mouse():
     print("ok dispatcher mouse")
 
 
-def test_dispatcher_media_and_pause():
+@patch("gestures.active_window_title", return_value="")
+def test_dispatcher_media_and_pause(_mock_active_window_title):
     sink = NullSink()
     disp = Dispatcher(sink, cfg(start_mode="media"))
     assert disp.mode == "media"
