@@ -854,12 +854,38 @@ def test_media_keys_blocked_without_player_window():
         g.active_window_title = lambda: "My video - YouTube - Google Chrome"
         disp.handle([GestureEvent("PALM")], st)
         assert real_calls(sink) == [("press", ("space",))], real_calls(sink)
-        g.active_window_title = lambda: ""                     # undetectable: permissive
+        g.active_window_title = lambda: ""                     # unknown window
+        before = len(real_calls(sink))
         disp.handle([GestureEvent("PALM")], st)
-        assert real_calls(sink)[-1] == ("press", ("space",))
+        if g.os.name == "nt":
+            assert len(real_calls(sink)) == before              # fail closed on Windows
+        else:
+            assert real_calls(sink)[-1] == ("press", ("space",)) # legacy non-Windows behavior
     finally:
         g.active_window_title = orig
     print("ok media keys gated on focused player window")
+
+
+
+def test_media_keys_fail_closed_when_windows_title_is_unknown():
+    import gestures as g
+    from hand_gesture_control import GestureEvent, HandState
+
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg(media_window_allowlist=["youtube", "vlc"]))
+    disp.mode = "media"
+    original_name = g.os.name
+    original_title = g.active_window_title
+    try:
+        g.os.name = "nt"
+        g.active_window_title = lambda: ""
+        disp.handle([GestureEvent("PALM")], HandState(found=True))
+        assert not real_calls(sink), real_calls(sink)
+        assert "cannot identify" in disp.notice
+    finally:
+        g.os.name = original_name
+        g.active_window_title = original_title
+    print("ok media keys fail closed when Windows foreground window is unknown")
 
 
 def test_curl_and_separation_cancel_without_rearming():
