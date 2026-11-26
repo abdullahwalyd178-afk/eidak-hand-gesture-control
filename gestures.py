@@ -702,8 +702,8 @@ class Dispatcher:
         """Media keys go to WHATEVER window has focus - a space lands as a
         typed space in any editor, Ctrl+W closes any tab (advisor review
         item). On Windows, only fire them when a known player window is
-        focused; if the foreground window cannot be determined (non-Windows,
-        API failure), stay permissive rather than breaking the feature."""
+        focused; an unknown foreground title fails closed. Non-Windows keeps
+        the permissive behavior because the Windows focus API is unavailable."""
         title = active_window_title()
         self.active_window = title
         allow = self.cfg.get("media_window_allowlist") or []
