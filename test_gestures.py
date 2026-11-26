@@ -709,6 +709,26 @@ def test_second_click_position_comes_from_click_frame():
     print("ok second click uses the click frame's own position")
 
 
+def test_media_keys_fail_closed_when_windows_title_is_unknown():
+    import gestures as g
+    from hand_gesture_control import GestureEvent, HandState
+
+    sink = NullSink()
+    disp = Dispatcher(sink, cfg(media_window_allowlist=["youtube", "vlc"]))
+    disp.mode = "media"
+    original_name = g.os.name
+    original_title = g.active_window_title
+    try:
+        g.os.name = "nt"
+        g.active_window_title = lambda: ""
+        disp.handle([GestureEvent("PALM")], HandState(found=True))
+        assert not real_calls(sink), real_calls(sink)
+        assert "cannot identify" in disp.notice
+    finally:
+        g.os.name = original_name
+        g.active_window_title = original_title
+    print("ok media keys fail closed when Windows foreground window is unknown")
+
 if __name__ == "__main__":
     test_classify()
     test_move()
@@ -751,6 +771,7 @@ if __name__ == "__main__":
     test_release_then_new_pinch_after_pinched_entry_clicks_once()
     test_grace_replay_fires_no_new_gestures()
     test_second_click_position_comes_from_click_frame()
+    test_media_keys_fail_closed_when_windows_title_is_unknown()
     print("ALL TESTS PASSED")
 
 
@@ -866,26 +887,6 @@ def test_media_keys_blocked_without_player_window():
     print("ok media keys gated on focused player window")
 
 
-
-def test_media_keys_fail_closed_when_windows_title_is_unknown():
-    import gestures as g
-    from hand_gesture_control import GestureEvent, HandState
-
-    sink = NullSink()
-    disp = Dispatcher(sink, cfg(media_window_allowlist=["youtube", "vlc"]))
-    disp.mode = "media"
-    original_name = g.os.name
-    original_title = g.active_window_title
-    try:
-        g.os.name = "nt"
-        g.active_window_title = lambda: ""
-        disp.handle([GestureEvent("PALM")], HandState(found=True))
-        assert not real_calls(sink), real_calls(sink)
-        assert "cannot identify" in disp.notice
-    finally:
-        g.os.name = original_name
-        g.active_window_title = original_title
-    print("ok media keys fail closed when Windows foreground window is unknown")
 
 
 def test_curl_and_separation_cancel_without_rearming():
