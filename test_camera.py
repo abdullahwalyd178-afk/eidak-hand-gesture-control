@@ -115,6 +115,24 @@ def test_save_config_diff_only(tmp_path=None):
             hgc.CONFIG_PATH = original_config_path
 
 
+
+def test_config_test_preserves_existing_config():
+    import tempfile
+
+    original_config_path = hgc.CONFIG_PATH
+    with tempfile.TemporaryDirectory(prefix="eidak-preserve-test-") as tmpdir:
+        sentinel = os.path.join(tmpdir, "real-config.json")
+        with open(sentinel, "w", encoding="utf-8") as fh:
+            fh.write('{"user_setting": "keep-me"}')
+        hgc.CONFIG_PATH = sentinel
+        try:
+            test_save_config_diff_only()
+        finally:
+            hgc.CONFIG_PATH = original_config_path
+        with open(sentinel, "r", encoding="utf-8") as fh:
+            check("existing config survives config test", json.load(fh) == {"user_setting": "keep-me"})
+
+
 def test_freeze_detection():
     # A frozen camera feeds identical frames; read() must flag it after the
     # configured window. We fake VideoCapture at the manager level.
