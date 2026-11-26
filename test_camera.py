@@ -87,6 +87,21 @@ def test_probe_plan_strict():
           all(p[0] == 1 for p in plan))
 
 
+
+def test_probe_plan_strict_ignores_different_last_camera():
+    backends = cam.CameraManager(dict(hgc.DEFAULT_CONFIG))._backends()
+    if not backends:
+        print("  skip strict last-camera test (no cv2 / no camera backends)")
+        return
+    cfg = dict(hgc.DEFAULT_CONFIG)
+    cfg["camera_index"] = 1
+    cfg["camera_strict"] = True
+    cfg["last_camera"] = {"index": 2, "backend": backends[0][0]}
+    plan = cam.CameraManager(cfg)._probe_plan()
+    check("strict mode never probes remembered different camera",
+          bool(plan) and all(index == 1 for index, _, _ in plan))
+
+
 def test_save_config_diff_only(tmp_path=None):
     path = hgc.CONFIG_PATH
     try:
