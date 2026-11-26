@@ -43,3 +43,31 @@ jobs:
 
       - name: Run config tests (headless)
         run: python test_config.py
+
+  package-windows:
+    name: Build Windows executable
+    needs: tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install application and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable (same command as release workflow)
+        run: python -m PyInstaller --clean --noconfirm --onefile --name Eidak hand_gesture_control.py
+
+      - name: Verify executable exists
+        run: |
+          if (!(Test-Path "dist/Eidak.exe")) { throw "PyInstaller did not create dist/Eidak.exe" }
