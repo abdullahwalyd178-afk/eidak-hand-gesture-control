@@ -190,7 +190,7 @@ def test_dispatcher_mouse():
     print("ok dispatcher mouse")
 
 
-@patch("gestures.active_window_title", return_value="")
+@patch("gestures.active_window_title", return_value="VLC media player")
 def test_dispatcher_media_and_pause(_mock_active_window_title):
     sink = NullSink()
     disp = Dispatcher(sink, cfg(start_mode="media"))
