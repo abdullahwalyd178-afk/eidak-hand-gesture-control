@@ -360,22 +360,42 @@ def run(cfg: dict) -> int:
         return 1
     print(f"Camera {camera.active_index} via {camera.backend_name} is running.")
 
-    sink = PyAutoSink()
-    pipeline = GesturePipeline(cfg)
-    dispatcher = Dispatcher(sink, cfg)
-
-    hands = mp.solutions.hands.Hands(
-        static_image_mode=False,
-        max_num_hands=int(cfg["max_num_hands"]),
-        min_detection_confidence=float(cfg["detection_confidence"]),
-        min_tracking_confidence=float(cfg["tracking_confidence"]),
-        model_complexity=0,  # lighter model: roughly halves CPU per frame (item 15)
-    )
-    drawing = mp.solutions.drawing_utils
-    styles = mp.solutions.drawing_styles
-
-    window = "Eidak - Hand Gesture PC Control"
-    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    # Camera is already open. Guard every later initialization so a failure
+    # (PyAutoGUI screen lookup, MediaPipe model creation, or window creation)
+    # cannot leave the camera handle locked until the process exits.
+    hands = None
+    try:
+        sink = PyAutoSink()
+        pipeline = GesturePipeline(cfg)
+        dispatcher = Dispatcher(sink, cfg)
+        hands = mp.solutions.hands.Hands(
+            static_image_mode=False,
+            max_num_hands=int(cfg["max_num_hands"]),
+            min_detection_confidence=float(cfg["detection_confidence"]),
+            min_tracking_confidence=float(cfg["tracking_confidence"]),
+            model_complexity=0,  # lighter model: roughly halves CPU per frame (item 15)
+        )
+        drawing = mp.solutions.drawing_utils
+        styles = mp.solutions.drawing_styles
+        window = "Eidak - Hand Gesture PC Control"
+        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    except Exception as exc:
+        log.exception("startup initialization failed")
+        print(f"Could not initialize Eidak: {exc}")
+        if hands is not None:
+            try:
+                hands.close()
+            except Exception:
+                log.exception("failed to close MediaPipe during startup cleanup")
+        try:
+            camera.release()
+        except Exception:
+            log.exception("failed to release camera during startup cleanup")
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            log.exception("failed to destroy OpenCV windows during startup cleanup")
+        return 1
 
     hotkey_registered = False
     if keyboard is not None:
@@ -533,9 +553,21 @@ def run(cfg: dict) -> int:
         except Exception:
             pass
         save_config(cfg)
-        hands.close()
-        camera.release()
-        cv2.destroyAllWindows()
+        # Cleanup each resource independently: one failing close must not
+        # prevent the camera or OpenCV windows from being released.
+        if hands is not None:
+            try:
+                hands.close()
+            except Exception:
+                log.exception("failed to close MediaPipe")
+        try:
+            camera.release()
+        except Exception:
+            log.exception("failed to release camera")
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            log.exception("failed to destroy OpenCV windows")
         log.info("run stopped")
     print("Stopped.")
     return 0
